@@ -14,6 +14,15 @@ This repository contains R functions for processing CUSP (Cambridge University S
 - `CuspTaskFunctions.R`: Functions for processing task-specific data (PALP, CMS, CFT, SWM)
 - `entryPoint.R`: Main script for downloading and processing CUSP data
 
+## Required External Files
+
+The following files are required for processing but are not included in the repository for privacy reasons:
+
+- `discardIDs.xlsx`: Contains participant IDs to be excluded from processing
+- `ManualQC.xlsx`: Contains manual quality control flags and decisions
+
+These files should be placed in the same directory as the R scripts.
+
 ## Usage
 
 See individual function documentation for usage details. The main workflow is:
