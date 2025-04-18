@@ -28,3 +28,7 @@
 !*.R
 !.gitignore
 !README.md
+
+# But do ignore these specific R files
+cuspSummary.R
+summary_var.R
