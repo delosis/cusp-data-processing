@@ -1,0 +1,30 @@
+# R Environment Variables
+.Renviron
+.env
+*.env
+
+# R History files
+.Rhistory
+.Rapp.history
+
+# Session Data files
+.RData
+.RDataTmp
+
+# User-specific files
+.Ruserdata
+
+# Output files
+*.xlsx
+*.csv
+
+# R Project files
+.Rproj.user/
+
+# Ignore everything
+*
+
+# But not these files...
+!*.R
+!.gitignore
+!README.md
