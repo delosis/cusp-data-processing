@@ -601,7 +601,12 @@ safeSD <- function(.SD, cols, fun = rowSums, ...) {
     )
     
     # Apply the requested function (default: rowSums)
-    fun(numeric_cols, ...)
+    result <- fun(numeric_cols, ...)
+    
+    # Convert NaN to NA for consistent Excel output
+    result[is.nan(result)] <- NA
+    
+    return(result)
   })
 }
 
@@ -696,43 +701,53 @@ deriveQuestionnaireVariables <- function(Qs) {
     SS = c("A1_c", "A1_f", "A1_i", "A1_l", "A1_p", "A1_s")
   )
   
-  # Calculate SURPS subscales
+  # Calculate SURPS subscales - both sum and mean
   for (scale in names(surps_vars)) {
     Qs[, paste0("SURPS_", scale) := safeSD(.SD, surps_vars[[scale]])]
+    Qs[, paste0("SURPS_", scale, "_Mean") := safeSD(.SD, surps_vars[[scale]], fun = rowMeans, na.rm = TRUE)]
   }
   
   # Calculate SURPS total as sum of subscales
-  Qs[, SURPS_Total := SURPS_AS + SURPS_NT + SURPS_IMP + SURPS_SS]
+  surps_cols <- paste0("SURPS_", names(surps_vars))
+  Qs[, SURPS_Total := rowSums(.SD), .SDcols = surps_cols]
+  Qs[, SURPS_Total_Mean := rowMeans(.SD), .SDcols = surps_cols]
   
   # CRAFFT variables
   crafft_part_a <- c("C1A_A", "C1A_B", "C1A_C")
   crafft_part_b <- c("C1B_A", "C1B_B", "C1B_C", "C1B_D", "C1B_E", "C1B_F")
   
-  # Calculate CRAFFT scores
+  # Calculate CRAFFT scores - both sum and mean
   Qs[, CRAFFT_PartA := safeSD(.SD, crafft_part_a)]
+  Qs[, CRAFFT_PartA_Mean := safeSD(.SD, crafft_part_a, fun = rowMeans, na.rm = TRUE)]
   Qs[, CRAFFT_PartB := safeSD(.SD, crafft_part_b)]
+  Qs[, CRAFFT_PartB_Mean := safeSD(.SD, crafft_part_b, fun = rowMeans, na.rm = TRUE)]
   Qs[, CRAFFT_Total := CRAFFT_PartA + CRAFFT_PartB]
+  Qs[, CRAFFT_Total_Mean := (CRAFFT_PartA_Mean + CRAFFT_PartB_Mean) / 2]
   
   # SUMM variables (C5_A_01 to C5_A_06)
   summ_vars <- paste0("C5_A_0", 1:6)
   Qs[, SUMM_Total := safeSD(.SD, summ_vars)]
+  Qs[, SUMM_Total_Mean := safeSD(.SD, summ_vars, fun = rowMeans, na.rm = TRUE)]
   
   # MAAQ variables (C6_A_01 to C6_A_08)
   maaq_vars <- paste0("C6_A_0", 1:8)
   Qs[, MAAQ_Total := safeSD(.SD, maaq_vars)]
+  Qs[, MAAQ_Total_Mean := safeSD(.SD, maaq_vars, fun = rowMeans, na.rm = TRUE)]
   
   # AUDIT variables
   audit_vars <- c("C2_A", "D2_01", "D2_02", "D2_03", "D2_04", "D2_05", "D2_06", "D1", "D3", "D4")
   Qs[, AUDIT_Total := safeSD(.SD, audit_vars)]
+  Qs[, AUDIT_Total_Mean := safeSD(.SD, audit_vars, fun = rowMeans, na.rm = TRUE)]
   
   # CAST variables
   cast_vars <- paste0("G4_0", 1:6)
   Qs[, CAST_Total := safeSD(.SD, cast_vars)]
+  Qs[, CAST_Total_Mean := safeSD(.SD, cast_vars, fun = rowMeans, na.rm = TRUE)]
   
   # CUDIT variables - note use of recoded variables
   cudit_vars <- c("C2_D_CUDIT", "G4_07", "G4_08", "G4_09", "G4_10", "G4_11", "G4_05_CUDIT")
   Qs[, CUDIT_Total := safeSD(.SD, cudit_vars), .SDcols = cudit_vars]
-  Qs[, CUDIT_Mean := safeSD(.SD, cudit_vars, fun = rowMeans, na.rm = TRUE), .SDcols = cudit_vars]
+  Qs[, CUDIT_Total_Mean := safeSD(.SD, cudit_vars, fun = rowMeans, na.rm = TRUE), .SDcols = cudit_vars]
   Qs[, CUDIT_Median := safeSD(.SD, cudit_vars, fun = function(x) apply(x, 1, median, na.rm = TRUE)), .SDcols = cudit_vars]
   
   # BSI variables
@@ -740,8 +755,11 @@ deriveQuestionnaireVariables <- function(Qs) {
   bsi_anx_vars <- paste0("J8_", sprintf("%02d", 7:12))
   
   Qs[, BSI_Dep := safeSD(.SD, bsi_dep_vars), .SDcols = bsi_dep_vars]
+  Qs[, BSI_Dep_Mean := safeSD(.SD, bsi_dep_vars, fun = rowMeans, na.rm = TRUE), .SDcols = bsi_dep_vars]
   Qs[, BSI_Anx := safeSD(.SD, bsi_anx_vars), .SDcols = bsi_anx_vars]
+  Qs[, BSI_Anx_Mean := safeSD(.SD, bsi_anx_vars, fun = rowMeans, na.rm = TRUE), .SDcols = bsi_anx_vars]
   Qs[, BSI_Total := BSI_Dep + BSI_Anx]
+  Qs[, BSI_Total_Mean := (BSI_Dep_Mean + BSI_Anx_Mean) / 2]
   
   # Brief COPE variables
   brief_cope_vars <- list(
@@ -761,31 +779,40 @@ deriveQuestionnaireVariables <- function(Qs) {
     SB = c("J9_13", "J9_26")
   )
   
-  # Calculate Brief COPE subscales
+  # Calculate Brief COPE subscales - both sum and mean
   for (scale in names(brief_cope_vars)) {
     Qs[, paste0("Brief_COPE_", scale) := safeSD(.SD, brief_cope_vars[[scale]]), 
+       .SDcols = brief_cope_vars[[scale]]]
+    Qs[, paste0("Brief_COPE_", scale, "_Mean") := safeSD(.SD, brief_cope_vars[[scale]], 
+                                                         fun = rowMeans, na.rm = TRUE), 
        .SDcols = brief_cope_vars[[scale]]]
   }
   
   # Calculate Brief COPE total as sum of all subscales
   brief_cope_cols <- paste0("Brief_COPE_", names(brief_cope_vars))
   Qs[, Brief_COPE_Total := rowSums(.SD), .SDcols = brief_cope_cols]
+  Qs[, Brief_COPE_Total_Mean := rowMeans(.SD), .SDcols = brief_cope_cols]
   
   # APSS variables
   apss_vars <- c(paste0("J10_0", 1:5), "J10_08", "J10_09")
   Qs[, APSS_Total := safeSD(.SD, apss_vars)]
+  Qs[, APSS_Total_Mean := safeSD(.SD, apss_vars, fun = rowMeans, na.rm = TRUE)]
   
   # ATQ variables (J11_01 to J11_20)
   atq_vars <- paste0("J11_", sprintf("%02d", 1:20))
   Qs[, ATQ_Total := safeSD(.SD, atq_vars)]
+  Qs[, ATQ_Total_Mean := safeSD(.SD, atq_vars, fun = rowMeans, na.rm = TRUE)]
   
   # SES variables - note use of 'R' suffix for reversed items
   ses_ri <- c("J13_01", "J13_03", "J13_04", "J13_07", "J13_10")
   ses_rc <- c("J13_02R", "J13_05R", "J13_06R", "J13_08R", "J13_09R")
   
   Qs[, SES_RI := safeSD(.SD, ses_ri), .SDcols = ses_ri]
+  Qs[, SES_RI_Mean := safeSD(.SD, ses_ri, fun = rowMeans, na.rm = TRUE), .SDcols = ses_ri]
   Qs[, SES_RC := safeSD(.SD, ses_rc), .SDcols = ses_rc]
+  Qs[, SES_RC_Mean := safeSD(.SD, ses_rc, fun = rowMeans, na.rm = TRUE), .SDcols = ses_rc]
   Qs[, SES_Total := SES_RI + SES_RC]
+  Qs[, SES_Total_Mean := (SES_RI_Mean + SES_RC_Mean) / 2]
   
   # SDQ variables - note use of 'R' suffix for reversed items
   sdq_vars <- list(
@@ -796,15 +823,19 @@ deriveQuestionnaireVariables <- function(Qs) {
     PS = c("J12_01", "J12_04", "J12_09", "J12_17", "J12_20")
   )
   
-  # Calculate SDQ subscales
+  # Calculate SDQ subscales - both sum and mean
   for (scale in names(sdq_vars)) {
     Qs[, paste0("SDQ_", scale) := safeSD(.SD, sdq_vars[[scale]]), 
+       .SDcols = sdq_vars[[scale]]]
+    Qs[, paste0("SDQ_", scale, "_Mean") := safeSD(.SD, sdq_vars[[scale]], 
+                                                  fun = rowMeans, na.rm = TRUE), 
        .SDcols = sdq_vars[[scale]]]
   }
   
   # Calculate SDQ total as sum of all subscales
   sdq_cols <- paste0("SDQ_", names(sdq_vars))
   Qs[, SDQ_Total := rowSums(.SD), .SDcols = sdq_cols]
+  Qs[, SDQ_Total_Mean := rowMeans(.SD), .SDcols = sdq_cols]
   
   return(Qs)
 } 
