@@ -2,7 +2,6 @@ rm()
 
 # Source helper functions and load required libraries
 tryCatch({
-
   source("CuspDownloadFunctions.R")
   source("CuspMatchingFunctions.R")
   source("CuspTaskFunctions.R")
@@ -120,14 +119,18 @@ if (file.exists("checkpoint_questionnaires.RData")) {
   # Download and process Q1 data
   Q1 <- selectIteration(
     downloadSingleDataFile("CUSP_Q1-DIGEST_BASIC_SAMPLE_SQL"),
-    valid = FALSE
+    valid = FALSE,
+    completed = FALSE,
+    isQuestionnaire = TRUE
   )
   setDT(Q1)
 
   Q1 <- rbind(Q1,
               selectIteration(
                 downloadSingleDataFile("CUSP_Q1_SHORT-DIGEST_BASIC_SAMPLE_SQL"),
-                valid = FALSE
+                valid = FALSE,
+                completed = FALSE,
+                isQuestionnaire = TRUE
               ),
               fill = T)
 
@@ -137,28 +140,36 @@ if (file.exists("checkpoint_questionnaires.RData")) {
   # Download and process Q2 data
   Q2 <- selectIteration(
     downloadSingleDataFile("CUSP_Q2-DIGEST_BASIC_SAMPLE_SQL"),
-    valid = FALSE
+    valid = FALSE,
+    completed = FALSE,
+    isQuestionnaire = TRUE
   )
   setDT(Q2)
 
   Q2 <- rbind(Q2,
               selectIteration(
                 downloadSingleDataFile("CUSP_ONTARIO_Q2-DIGEST_BASIC_SAMPLE_SQL"),
-                valid = FALSE
+                valid = FALSE,
+                completed = FALSE,
+                isQuestionnaire = TRUE
               ),
               fill = T)
 
   Q2 <- rbind(Q2,
               selectIteration(
                 downloadSingleDataFile("CUSP_UBCO_DELTA_Q2-DIGEST_BASIC_SAMPLE_SQL"),
-                valid = FALSE
+                valid = FALSE,
+                completed = FALSE,
+                isQuestionnaire = TRUE
               ),
               fill = T)
 
   Q2 <- rbind(Q2,
               selectIteration(
                 downloadSingleDataFile("CUSP_OPfS_Q2-DIGEST_BASIC_SAMPLE_SQL"),
-                valid = FALSE
+                valid = FALSE,
+                completed = FALSE,
+                isQuestionnaire = TRUE
               ),
               fill = T)
 
@@ -187,7 +198,7 @@ names(samples) <- c("User.code", "Sample")
 
 message("Processing SURPS data and merging datasets...")
 # Process SURPS data
-SURPSmatch <- rotateQuestionnaire(Q1, idVar = c("User.code", "Completed.Timestamp"))
+SURPSmatch <- rotateQuestionnaire(Q1, idVar = c("User.code", "Completed.Timestamp", "Processed.Timestamp"))
 Q2match <- rotateQuestionnaire(Q2, idVar = c("User.code"))
 setDT(SURPSmatch)
 setDT(Q2match)
@@ -494,64 +505,124 @@ message("Downloading and processing task data...")
 
 # Download PALP data
 message("Downloading PALP data...")
-palp <- selectIteration(
-  downloadSingleDataFile("CUSP_PALP-BASIC_DIGEST"),
-  valid = FALSE
-)
-setDT(palp)
+palp_raw <- downloadSingleDataFile("CUSP_PALP-BASIC_DIGEST")
+setDT(palp_raw)
 
 # Download and combine CMS data
 message("Downloading and combining CMS data...")
-cms <- selectIteration(
-  downloadSingleDataFile("CUSP_CMS2-BASIC_DIGEST"),
-  valid = FALSE
-)
-cms <- rbind(
-  cms,
-  selectIteration(
-    downloadSingleDataFile("CUSP_CMS2R-BASIC_DIGEST"),
-    valid = FALSE
-  ),
-  fill = TRUE
-)
-setDT(cms)
+cms_raw <- downloadSingleDataFile("CUSP_CMS2-BASIC_DIGEST")
+setDT(cms_raw)
+cmsr_raw <-downloadSingleDataFile("CUSP_CMS2R-BASIC_DIGEST")
+setDT(cmsr_raw)
 
 # Download SWM data
 message("Downloading SWM data...")
-swm <- selectIteration(
-  downloadSingleDataFile("CUSP_SWM10-SWM_DIGEST"),
-  valid = FALSE
-)
-setDT(swm)
+swm_raw <- downloadSingleDataFile("CUSP_SWM10-SWM_DIGEST")
+setDT(swm_raw)
 
 # Download CFT data
 message("Downloading CFT data...")
-cft <- selectIteration(
-  downloadSingleDataFile("CUSP_CFT-BASIC_DIGEST"),
-  valid = FALSE
-)
-setDT(cft)
+cft_raw <- downloadSingleDataFile("CUSP_CFT-BASIC_DIGEST")
+setDT(cft_raw)
 
 message("Task data download complete!")
+
+# Apply duplicate mapping to raw task data
+message("Applying duplicate mapping to task data...")
+for (i in 1:nrow(duplicate_map)) {
+  palp_raw[User.code == duplicate_map$removed_id[i], User.code := duplicate_map$kept_id[i]]
+  cms_raw[User.code == duplicate_map$removed_id[i], User.code := duplicate_map$kept_id[i]]
+  cmsr_raw[User.code == duplicate_map$removed_id[i], User.code := duplicate_map$kept_id[i]]
+  swm_raw[User.code == duplicate_map$removed_id[i], User.code := duplicate_map$kept_id[i]]
+  cft_raw[User.code == duplicate_map$removed_id[i], User.code := duplicate_map$kept_id[i]]
+}
+
+
+
+# Select iterations for each task
+palp <- selectIteration(palp_raw, iterationFunction = min, completed = TRUE, allowIncomplete = TRUE, isQuestionnaire = FALSE)
+cms <- rbind(
+  selectIteration(cms_raw, iterationFunction = min, completed = TRUE, allowIncomplete = TRUE, isQuestionnaire = FALSE),
+  selectIteration(cmsr_raw, iterationFunction = min, completed = TRUE, allowIncomplete = TRUE, isQuestionnaire = FALSE),
+  fill=TRUE
+)
+swm <- selectIteration(swm_raw, iterationFunction = min, completed = TRUE, allowIncomplete = TRUE, isQuestionnaire = FALSE)
+cft <- selectIteration(cft_raw, iterationFunction = min, completed = TRUE, allowIncomplete = TRUE, isQuestionnaire = FALSE)
 
 # Process task data
 message("Processing task data...")
 
 # Process PALP data
+write.xlsx(
+  palp,
+  paste0("CUSP_PALP_RAW_", current_date, ".xlsx"),
+  quote = FALSE,
+  na = "",
+  rowNames = FALSE
+)
 palp_summary <- summaryVarsPALP(palp)
-write.xlsx(palp_summary, "CUSP_PALP_SUMMARY.xlsx", quote = FALSE, na = "", rowNames = FALSE)
+write.xlsx(
+  palp_summary,
+  paste0("CUSP_PALP_SUMMARY_", current_date, ".xlsx"),
+  quote = FALSE,
+  na = "",
+  rowNames = FALSE
+)
+
 
 # Process CMS data
+write.xlsx(
+  cms,
+  paste0("CUSP_CMS_RAW_", current_date, ".xlsx"),
+  quote = FALSE,
+  na = "",
+  rowNames = FALSE
+)
 cms_summary <- summaryVarsCMS(cms)
-write.xlsx(cms_summary, "CUSP_CMS_SUMMARY.xlsx", quote = FALSE, na = "", rowNames = FALSE)
+write.xlsx(
+  cms_summary,
+  paste0("CUSP_CMS_SUMMARY_", current_date, ".xlsx"),
+  quote = FALSE,
+  na = "",
+  rowNames = FALSE
+)
+
 
 # Process CFT data - merge in age data first
+write.xlsx(
+  cft,
+  paste0("CUSP_CFT_RAW_", current_date, ".xlsx"),
+  quote = FALSE,
+  na = "",
+  rowNames = FALSE
+)
 cft_with_age <- merge(cft, matching_anon[, .(User.code, AgeAtTesting = age_at_testing)], by = "User.code", all.x = TRUE)
 cft_summary <- summaryVarsCFT(cft_with_age)
-write.xlsx(cft_summary, "CUSP_CFT_SUMMARY.xlsx", quote = FALSE, na = "", rowNames = FALSE)
+write.xlsx(
+  cft_summary,
+  paste0("CUSP_CFT_SUMMARY_", current_date, ".xlsx"),
+  quote = FALSE,
+  na = "",
+  rowNames = FALSE
+)
+
 
 # Process SWM data
+write.xlsx(
+  swm,
+  paste0("CUSP_SWM_RAW_", current_date, ".xlsx"),
+  quote = FALSE,
+  na = "",
+  rowNames = FALSE
+)
 swm_summary <- summaryVarsSWM(swm)
-write.xlsx(swm_summary, "CUSP_SWM_SUMMARY.xlsx", quote = FALSE, na = "", rowNames = FALSE)
+write.xlsx(
+  swm_summary,
+  paste0("CUSP_SWM_SUMMARY_", current_date, ".xlsx"),
+  quote = FALSE,
+  na = "",
+  rowNames = FALSE
+)
+
 
 message("Task data processing complete and summary files saved.")

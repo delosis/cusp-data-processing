@@ -1,5 +1,5 @@
 # Install Some packages - only needed if you don't have them! No need to rerun each time
-list.of.packages <- c('httr',"car", "data.table", "base64enc", "R.utils", "dplyr", "tidyr", "ggplot2")
+list.of.packages <- c('httr', "data.table", "base64enc", "R.utils")
 new.packages <- list.of.packages[!(list.of.packages %in% installed.packages()[,"Package"])]
 if(length(new.packages)) install.packages(new.packages)
 lapply(list.of.packages, require, character.only = TRUE)
@@ -145,6 +145,7 @@ downloadSingleDataFile <- function(taskDigestID, sampleID=NULL) {
   if (!is.null(dt)) {
     ## replace spaces and [] in column names to preserve compatibility with read.table
     names(dt) <- gsub(' ','.', names(dt))
+    names(dt) <- gsub('\\[ms\\]', '.ms.', names(dt))
     
     if (nrow(dt)>0) {
       return(dt)
@@ -171,29 +172,6 @@ escape <- function(x) {
   return (x)
 }
 
-
-#' Recode variables according to a function
-#' @param df Data frame
-#' @param varlist List of variables to recode
-#' @param fun Function to apply for recoding
-#' @return Data frame with recoded variables
-#' @export
-recodeVariables <- function(df, varlist, fun) {
-  for (i in varlist) {
-    if (length(grep(i, names(df))) > 1) {
-      stop(paste('Reverse token', i, 'does not uniquely identify one variable in supplied df'))
-    }
-    if (exists("customMissingValues")) {
-      # If there are any NAs or Custom missings in the original data we should not touch them
-      df[!(df[,grep(i, names(df))] %in% customMissingValues) & !is.na(df[,grep(i, names(df))]),grep(i, names(df))] <- 
-        fun(na.omit(stripCustomMissings(df[,grep(i, names(df))])))
-    } else {
-      df[,grep(i, names(df))] <- fun(df[,grep(i, names(df))])
-    }
-    names(df)[grep(i, names(df))] <- paste(names(df)[grep(i, names(df))], 'R', sep='')
-  }
-  return(df)
-}
 
 #' Select Iteration from dataset
 #'
@@ -273,15 +251,10 @@ selectIteration <- function(df,
       return(NULL)
     }
     
-    df <- merge(df,
-                aggregate(Iteration ~ User.code,
-                         iterationFunction,
-                         data = df),
-                by = c("User.code", "Iteration"),
-                sort = FALSE)
-    df <- df[order(df$rowIndex),]
-    df$rowIndex <- NULL
+  
 
+    # NB changed to using Completed.Timestamp instead of iteration to allow deduplicated user codes to 
+    # have their multiple attempts correctly selected from ( iterations will be shared )
     if(isQuestionnaire){
       # Select just the LAST response on each question 
       df <- df[!duplicated(subset(df, select=c(User.code, Iteration, Trial)), fromLast=T),]
@@ -289,6 +262,15 @@ selectIteration <- function(df,
       df <- df[df$Trial.result !='skip_back',]
       # remove js flags
       df <- df[df$Block !='js',]
+    } else {
+      df <- merge(df,
+                  aggregate(Completed.Timestamp ~ User.code,
+                          iterationFunction,
+                          data = df),
+                  by = c("User.code", "Completed.Timestamp"),
+                  sort = FALSE)
+      df <- df[order(df$rowIndex),]
+      df$rowIndex <- NULL
     }
     return(df)
 }
@@ -424,65 +406,4 @@ fixNumericVariables <- function(df) {
     }
   })
   return(df)
-}
-
-#' QCflagQdata
-#' Adds quality control flags to questionnaire data
-#' @param QData A data.table containing questionnaire data
-#' @return A data.table containing only User.code and QC flags
-#' @export
-QCflagQdata <- function(QData) {
-  # Convert to data.table if not already
-  if (!inherits(QData, "data.table")) {
-    setDT(QData)
-  }
-  
-  # Create a copy to avoid modifying the original
-  QData_copy <- copy(QData)
-  
-  # DEPAPO Foil QC - now using C2_W (SEMORON)
-  QData_copy[, QC_DEPAPO_FOIL := as.integer(!is.na(C2_W) & C2_W > 0)]
-  
-  # DEPAPO Uncommon > 2.5 QC
-  # TODO: Review this list of uncommon drugs for CUSP - the list has expanded significantly
-  # Current list based on original DEPAPO uncommon drugs mapping to new CUSP variables
-  uncommon_drugs <- c("C2_E",  # SPICE (K2, K3, etc.)
-                     "C2_V",  # STEROIDS
-                     "C2_H",  # STIMULANTS (Ritalin, Adderall, etc.)
-                     "C2_I",  # SEDATIVES/TRANQUILLIZERS
-                     "C2_K",  # COCAINE
-                     "C2_O",  # HEROIN
-                     "C2_S")  # LSD
-  
-  QData_copy[, QC_DEPAPO_UNCOMMON2.5 := as.integer(!is.na(C2_E) & 
-    rowMeans(.SD, na.rm = TRUE) > 2.5), .SDcols = uncommon_drugs]
-  
-  # SURPS One Answer QC - using A1_a to A1_w
-  surps_cols <- grep("^A1_[a-w]$", names(QData_copy), value = TRUE)
-  QData_copy[, QC_SURPS_ONE_ANSWER := as.integer(
-    fcase(
-      # If all values are NA, not a single response
-      all(is.na(.SD)), 0L,
-      # If min equals max (excluding NAs), it's a single response
-      min(.SD, na.rm = TRUE) == max(.SD, na.rm = TRUE), 1L,
-      # Otherwise not a single response
-      default = 0L
-    )
-  ), .SDcols = surps_cols]
-  
-  # SDQ One Answer QC - using J12_01 to J12_25
-  sdq_cols <- grep("^J12_(0[1-9]|1[0-9]|2[0-5])$", names(QData_copy), value = TRUE)
-  QData_copy[, QC_SDQ_ONE_ANSWER := as.integer(
-    fcase(
-      # If all values are NA, not a single response
-      all(is.na(.SD)), 0L,
-      # If min equals max (excluding NAs), it's a single response
-      min(.SD, na.rm = TRUE) == max(.SD, na.rm = TRUE), 1L,
-      # Otherwise not a single response
-      default = 0L
-    )
-  ), .SDcols = sdq_cols]
-  
-  # Return only User.code and QC flags
-  return(QData_copy[, .(User.code, QC_DEPAPO_FOIL, QC_DEPAPO_UNCOMMON2.5, QC_SURPS_ONE_ANSWER, QC_SDQ_ONE_ANSWER)])
 }

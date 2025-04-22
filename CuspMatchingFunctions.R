@@ -386,29 +386,28 @@ process_and_anonymize <- function(df) {
 #' @param Q1 Q1 data frame
 #' @param Q2 Q2 data frame
 #' @param current_date Current date for filename
-#' @return List of processed questionnaires by site
+#' @return The combined and processed Qs data.table
 #' @export
 process_questionnaires <- function(duplicate_map, Q1, Q2, current_date) {
-  tryCatch({
+   tryCatch({
     message("Starting questionnaire processing...")
-    
-    # Initialize result list
-    result <- list()
     
     message("Downloading Q3 data...")
     Q3 <- tryCatch({
       q3_base <- selectIteration(
         downloadSingleDataFile("CUSP_Q3-BASIC_DIGEST"),
-        valid = FALSE
+        valid = FALSE,
+        completed = FALSE,
+        isQuestionnaire = TRUE
       )
       setDT(q3_base)
       
       q3_ubco <- selectIteration(
         downloadSingleDataFile("CUSP_UBCO_DELTA_Q3-BASIC_DIGEST"),
-        valid = FALSE
+        valid = FALSE,
+        completed = FALSE,
+        isQuestionnaire = TRUE
       )
-      
-
       
       rbindlist(list(q3_base, q3_ubco), fill = TRUE)
     }, error = function(e) {
@@ -420,13 +419,17 @@ process_questionnaires <- function(duplicate_map, Q1, Q2, current_date) {
     Q4 <- tryCatch({
       q4_base <- selectIteration(
         downloadSingleDataFile("CUSP_Q4-BASIC_DIGEST"),
-        valid = FALSE
+        valid = FALSE,
+        completed = FALSE,
+        isQuestionnaire = TRUE
       )
       setDT(q4_base)
       
       q4_ontario <- selectIteration(
         downloadSingleDataFile("CUSP_ONTARIO_Q4-BASIC_DIGEST"),
-        valid = FALSE
+        valid = FALSE,
+        completed = FALSE,
+        isQuestionnaire = TRUE
       )
       
       rbindlist(list(q4_base, q4_ontario), fill = TRUE)
@@ -435,8 +438,22 @@ process_questionnaires <- function(duplicate_map, Q1, Q2, current_date) {
       return(data.table())
     })
     
+    message("Downloading Q5 data...")
+    Q5 <- tryCatch({
+      q5 <- selectIteration(
+        downloadSingleDataFile("CUSP_Q5-BASIC_DIGEST"),
+        valid = FALSE,
+        completed = FALSE,
+        isQuestionnaire = TRUE
+      )
+      setDT(q5)
+    }, error = function(e) {
+      message("Error downloading Q4 data: ", e$message)
+      return(data.table())
+    })
+    
     message("Combining questionnaires...")
-    Qs <- rbindlist(list(Q1, Q2, Q3, Q4), fill = TRUE)
+    Qs <- rbindlist(list(Q1, Q2, Q3, Q4, Q5), fill = TRUE)
     
     message("Applying duplicate mapping...")
     for (i in 1:nrow(duplicate_map)) {
@@ -450,7 +467,6 @@ process_questionnaires <- function(duplicate_map, Q1, Q2, current_date) {
     Qs <- Qs[Qs$Trial.result != 'skip_back', ]
     Qs <- Qs[Qs$Block != 'js', ]
     Qs <- Qs[!duplicated(subset(Qs, select = c(User.code, Trial)), fromLast = T), ]
-    
     
     message("Rotating to wide format...")
     
@@ -470,8 +486,7 @@ process_questionnaires <- function(duplicate_map, Q1, Q2, current_date) {
            !grepl("TEST", name, ignore.case = T) , ]
     
     ## Add derived variables
-    Qs<-deriveCUSPSURPS(Qs, TRUE, FALSE)
-
+    Qs<-deriveQuestionnaireVariables(Qs)
 
     message("Splitting by site and saving...")
     sites <- c("CUSP_NS", "CUSP_UBCO", "CUSP_ONTARIO")
@@ -486,7 +501,6 @@ process_questionnaires <- function(duplicate_map, Q1, Q2, current_date) {
           na = "",
           rowNames = FALSE
         )
-        result[[site]] <- site_data
       }, error = function(e) {
         message("Error processing site ", site, ": ", e$message)
       })
@@ -500,91 +514,91 @@ process_questionnaires <- function(duplicate_map, Q1, Q2, current_date) {
     Qs$SchoolYear[Qs$Processed.Timestamp > '2023-08-01'] <- "23-24"
     
     # Generate site-level summary
-    site_summary <- tryCatch({
+    tryCatch({
       setDT(Qs)
-SUMMARY <- Qs[, list(
-  N = nrow(.SD),
-  pctAlcohol12m_C1 = 100 * sum(C1A_A == "1", na.rm = T) / sum(!is.na(.SD$C1A_A)),
-  pctCannabis12m_C1 = 100 * sum(C1A_B == "1", na.rm = T) / sum(!is.na(.SD$C1A_B)),
-  pctAlcohol12m_C2 = 100 * sum(C2_A %in% c("2", "3", "4", "5", "6"), na.rm = T) / sum(!is.na(.SD$C2_A)),
-  pctCannabis12m_C2 = 100 * sum(C2_D %in% c("2", "3", "4", "5", "6"), na.rm = T) / sum(!is.na(.SD$C2_D)),
-  pctAlcoholEver_C2 = 100 * sum(C2_A %in% c("1", "2", "3", "4", "5", "6"), na.rm = T) / sum(!is.na(.SD$C2_A)),
-  pctTobaccoEver_C2 = 100 * sum(C2_B %in% c("1", "2", "3", "4", "5", "6"), na.rm = T) / sum(!is.na(.SD$C2_B)),
-  pctEcigEver_C2 = 100 * sum(C2_C %in% c("1", "2", "3", "4", "5", "6"), na.rm = T) / sum(!is.na(.SD$C2_C)),
-  pctCannabisEver_C2 = 100 * sum(C2_D %in% c("1", "2", "3", "4", "5", "6"), na.rm = T) / sum(!is.na(.SD$C2_D)),
-  pctSpiceEver_C2 = 100 * sum(C2_E %in% c("1", "2", "3", "4", "5", "6"), na.rm = T) / sum(!is.na(.SD$C2_E)),
-  pctCoughEver_C2 = 100 * sum(C2_F %in% c("1", "2", "3", "4", "5", "6"), na.rm = T) / sum(!is.na(.SD$C2_F)),
-  pctPainEver_C2 = 100 * sum(C2_G %in% c("1", "2", "3", "4", "5", "6"), na.rm = T) / sum(!is.na(.SD$C2_G)),
-  pctStimulantEver_C2 = 100 * sum(C2_H %in% c("1", "2", "3", "4", "5", "6"), na.rm = T) / sum(!is.na(.SD$C2_H)),
-  pctSedativeEver_C2 = 100 * sum(C2_I %in% c("1", "2", "3", "4", "5", "6"), na.rm = T) / sum(!is.na(.SD$C2_I)),
-  pctCocaineEver_C2 = 100 * sum(C2_K %in% c("1", "2", "3", "4", "5", "6"), na.rm = T) / sum(!is.na(.SD$C2_K)),
-  pctFoilEver_C2 = 100 * sum(C2_W %in% c("1", "2", "3", "4", "5", "6"), na.rm = T) / sum(!is.na(.SD$C2_W)),
-  pctD2_01 = 100 * sum(D2_01 %in% c("1", "2", "3", "4"), na.rm = T) / sum(!is.na(.SD$D2_01)),
-  pctD2_01_MonthlyPlus = 100 * sum(D2_01 %in% c("2", "3", "4"), na.rm = T) / sum(!is.na(.SD$D2_01)),
-  pctD2_02 = 100 * sum(D2_01 %in% c("1", "2", "3", "4"), na.rm = T) / sum(!is.na(.SD$D2_02)),
-  pctD2_02_MonthlyPlus = 100 * sum(D2_02 %in% c("2", "3", "4"), na.rm = T) / sum(!is.na(.SD$D2_02)),
-  pctD2_03 = 100 * sum(D2_02 %in% c("1", "2", "3", "4"), na.rm = T) / sum(!is.na(.SD$D2_03)),
-  pctD2_03_MonthlyPlus = 100 * sum(D2_03 %in% c("2", "3", "4"), na.rm = T) / sum(!is.na(.SD$D2_03)),
-  pctD2_04 = 100 * sum(D2_04 %in% c("1", "2", "3", "4"), na.rm = T) / sum(!is.na(.SD$D2_04)),
-  pctD2_04_MonthlyPlus = 100 * sum(D2_04 %in% c("2", "3", "4"), na.rm = T) / sum(!is.na(.SD$D2_04)),
-  pctD2_05 = 100 * sum(D2_05 %in% c("1", "2", "3", "4"), na.rm = T) / sum(!is.na(.SD$D2_05)),
-  pctD2_05_MonthlyPlus = 100 * sum(D2_05 %in% c("2", "3", "4"), na.rm = T) / sum(!is.na(.SD$D2_05)),
-  pctD2_06 = 100 * sum(D2_06 %in% c("1", "2", "3", "4"), na.rm = T) / sum(!is.na(.SD$D2_06)),
-  pctD2_06_MonthlyPlus = 100 * sum(D2_06 %in% c("2", "3", "4"), na.rm = T) / sum(!is.na(.SD$D2_06)),
-  pctD3_ever = 100 * sum(D3 %in% c("1", "2"), na.rm = T) / sum(!is.na(.SD$D3)),
-  pctD3_12m = 100 * sum(D3 %in% c("2"), na.rm = T) / sum(!is.na(.SD$D3)),
-  pctD4_ever = 100 * sum(D4 %in% c("1", "2"), na.rm = T) / sum(!is.na(.SD$D4)),
-  pctD4_12m = 100 * sum(D4 %in% c("2"), na.rm = T) / sum(!is.na(.SD$D4)),
-  D234_N = sum(!is.na(.SD$D4)),
-  pctG4_01 = 100 * sum(G4_01 %in% c("1", "2", "3", "4"), na.rm = T) / sum(!is.na(.SD$G4_01)),
-  pctG4_01_MonthlyPlus = 100 * sum(G4_01 %in% c("2", "3", "4"), na.rm = T) / sum(!is.na(.SD$G4_01)),
-  pctG4_02 = 100 * sum(G4_01 %in% c("1", "2", "3", "4"), na.rm = T) / sum(!is.na(.SD$G4_02)),
-  pctG4_02_MonthlyPlus = 100 * sum(G4_02 %in% c("2", "3", "4"), na.rm = T) / sum(!is.na(.SD$G4_02)),
-  pctG4_03 = 100 * sum(G4_02 %in% c("1", "2", "3", "4"), na.rm = T) / sum(!is.na(.SD$G4_03)),
-  pctG4_03_MonthlyPlus = 100 * sum(G4_03 %in% c("2", "3", "4"), na.rm = T) / sum(!is.na(.SD$G4_03)),
-  pctG4_04 = 100 * sum(G4_04 %in% c("1", "2", "3", "4"), na.rm = T) / sum(!is.na(.SD$G4_04)),
-  pctG4_04_MonthlyPlus = 100 * sum(G4_04 %in% c("2", "3", "4"), na.rm = T) / sum(!is.na(.SD$G4_04)),
-  pctG4_05 = 100 * sum(G4_05 %in% c("1", "2", "3", "4"), na.rm = T) / sum(!is.na(.SD$G4_05)),
-  pctG4_05_MonthlyPlus = 100 * sum(G4_05 %in% c("2", "3", "4"), na.rm = T) / sum(!is.na(.SD$G4_05)),
-  pctG4_06 = 100 * sum(G4_06 %in% c("1", "2", "3", "4"), na.rm = T) / sum(!is.na(.SD$G4_06)),
-  pctG4_06_MonthlyPlus = 100 * sum(G4_06 %in% c("2", "3", "4"), na.rm = T) / sum(!is.na(.SD$G4_06)),
-  pctG4_07 = 100 * sum(G4_07 %in% c("1", "2", "3", "4"), na.rm = T) / sum(!is.na(.SD$G4_07)),
-  pctG4_07_MonthlyPlus = 100 * sum(G4_07 %in% c("2", "3", "4"), na.rm = T) / sum(!is.na(.SD$G4_07)),
-  pctG4_08 = 100 * sum(G4_08 %in% c("1", "2", "3", "4"), na.rm = T) / sum(!is.na(.SD$G4_08)),
-  pctG4_08_MonthlyPlus = 100 * sum(G4_08 %in% c("2", "3", "4"), na.rm = T) / sum(!is.na(.SD$G4_08)),
-  pctG4_09 = 100 * sum(G4_09 %in% c("1", "2", "3", "4"), na.rm = T) / sum(!is.na(.SD$G4_09)),
-  pctG4_09_MonthlyPlus = 100 * sum(G4_09 %in% c("2", "3", "4"), na.rm = T) / sum(!is.na(.SD$G4_09)),
-  pctG4_10 = 100 * sum(G4_10 %in% c("1", "2", "3", "4"), na.rm = T) / sum(!is.na(.SD$G4_10)),
-  pctG4_10_MonthlyPlus = 100 * sum(G4_10 %in% c("2", "3", "4"), na.rm = T) / sum(!is.na(.SD$G4_10)),
-  pctG4_11 = 100 * sum(G4_11 %in% c("1", "2", "3", "4"), na.rm = T) / sum(!is.na(.SD$G4_11)),
-  pctG4_11_MonthlyPlus = 100 * sum(G4_11 %in% c("2", "3", "4"), na.rm = T) / sum(!is.na(.SD$G4_11)),
-  G4_N = sum(!is.na(.SD$G4_01)),
-  pctJ8_01 = 100 * sum(J8_01 %in% c("1", "2", "3", "4"), na.rm = T) / sum(!is.na(.SD$J8_01)),
-  pctJ8_01_ModeratelyPlus = 100 * sum(J8_01 %in% c("2", "3", "4"), na.rm = T) / sum(!is.na(.SD$J8_01)),
-  pctJ8_02 = 100 * sum(J8_01 %in% c("1", "2", "3", "4"), na.rm = T) / sum(!is.na(.SD$J8_02)),
-  pctJ8_02_ModeratelyPlus = 100 * sum(J8_02 %in% c("2", "3", "4"), na.rm = T) / sum(!is.na(.SD$J8_02)),
-  pctJ8_03 = 100 * sum(J8_02 %in% c("1", "2", "3", "4"), na.rm = T) / sum(!is.na(.SD$J8_03)),
-  pctJ8_03_ModeratelyPlus = 100 * sum(J8_03 %in% c("2", "3", "4"), na.rm = T) / sum(!is.na(.SD$J8_03)),
-  pctJ8_04 = 100 * sum(J8_04 %in% c("1", "2", "3", "4"), na.rm = T) / sum(!is.na(.SD$J8_04)),
-  pctJ8_04_ModeratelyPlus = 100 * sum(J8_04 %in% c("2", "3", "4"), na.rm = T) / sum(!is.na(.SD$J8_04)),
-  pctJ8_05 = 100 * sum(J8_05 %in% c("1", "2", "3", "4"), na.rm = T) / sum(!is.na(.SD$J8_05)),
-  pctJ8_05_ModeratelyPlus = 100 * sum(J8_05 %in% c("2", "3", "4"), na.rm = T) / sum(!is.na(.SD$J8_05)),
-  pctJ8_06 = 100 * sum(J8_06 %in% c("1", "2", "3", "4"), na.rm = T) / sum(!is.na(.SD$J8_06)),
-  pctJ8_06_ModeratelyPlus = 100 * sum(J8_06 %in% c("2", "3", "4"), na.rm = T) / sum(!is.na(.SD$J8_06)),
-  pctJ8_07 = 100 * sum(J8_07 %in% c("1", "2", "3", "4"), na.rm = T) / sum(!is.na(.SD$J8_07)),
-  pctJ8_07_ModeratelyPlus = 100 * sum(J8_07 %in% c("2", "3", "4"), na.rm = T) / sum(!is.na(.SD$J8_07)),
-  pctJ8_08 = 100 * sum(J8_08 %in% c("1", "2", "3", "4"), na.rm = T) / sum(!is.na(.SD$J8_08)),
-  pctJ8_08_ModeratelyPlus = 100 * sum(J8_08 %in% c("2", "3", "4"), na.rm = T) / sum(!is.na(.SD$J8_08)),
-  pctJ8_09 = 100 * sum(J8_09 %in% c("1", "2", "3", "4"), na.rm = T) / sum(!is.na(.SD$J8_09)),
-  pctJ8_09_ModeratelyPlus = 100 * sum(J8_09 %in% c("2", "3", "4"), na.rm = T) / sum(!is.na(.SD$J8_09)),
-  pctJ8_10 = 100 * sum(J8_10 %in% c("1", "2", "3", "4"), na.rm = T) / sum(!is.na(.SD$J8_10)),
-  pctJ8_10_ModeratelyPlus = 100 * sum(J8_10 %in% c("2", "3", "4"), na.rm = T) / sum(!is.na(.SD$J8_10)),
-  pctJ8_11 = 100 * sum(J8_11 %in% c("1", "2", "3", "4"), na.rm = T) / sum(!is.na(.SD$J8_11)),
-  pctJ8_11_ModeratelyPlus = 100 * sum(J8_11 %in% c("2", "3", "4"), na.rm = T) / sum(!is.na(.SD$J8_11)),
-  pctJ8_12 = 100 * sum(J8_12 %in% c("1", "2", "3", "4"), na.rm = T) / sum(!is.na(.SD$J8_12)),
-  pctJ8_12_ModeratelyPlus = 100 * sum(J8_12 %in% c("2", "3", "4"), na.rm = T) / sum(!is.na(.SD$J8_12)),
-  J8_N = sum(!is.na(.SD$J8_01))
-), by = c("District", "SchoolYear")]
+      SUMMARY <- Qs[, list(
+        N = nrow(.SD),
+        pctAlcohol12m_C1 = 100 * sum(C1A_A == "1", na.rm = T) / sum(!is.na(.SD$C1A_A)),
+        pctCannabis12m_C1 = 100 * sum(C1A_B == "1", na.rm = T) / sum(!is.na(.SD$C1A_B)),
+        pctAlcohol12m_C2 = 100 * sum(C2_A %in% c("2", "3", "4", "5", "6"), na.rm = T) / sum(!is.na(.SD$C2_A)),
+        pctCannabis12m_C2 = 100 * sum(C2_D %in% c("2", "3", "4", "5", "6"), na.rm = T) / sum(!is.na(.SD$C2_D)),
+        pctAlcoholEver_C2 = 100 * sum(C2_A %in% c("1", "2", "3", "4", "5", "6"), na.rm = T) / sum(!is.na(.SD$C2_A)),
+        pctTobaccoEver_C2 = 100 * sum(C2_B %in% c("1", "2", "3", "4", "5", "6"), na.rm = T) / sum(!is.na(.SD$C2_B)),
+        pctEcigEver_C2 = 100 * sum(C2_C %in% c("1", "2", "3", "4", "5", "6"), na.rm = T) / sum(!is.na(.SD$C2_C)),
+        pctCannabisEver_C2 = 100 * sum(C2_D %in% c("1", "2", "3", "4", "5", "6"), na.rm = T) / sum(!is.na(.SD$C2_D)),
+        pctSpiceEver_C2 = 100 * sum(C2_E %in% c("1", "2", "3", "4", "5", "6"), na.rm = T) / sum(!is.na(.SD$C2_E)),
+        pctCoughEver_C2 = 100 * sum(C2_F %in% c("1", "2", "3", "4", "5", "6"), na.rm = T) / sum(!is.na(.SD$C2_F)),
+        pctPainEver_C2 = 100 * sum(C2_G %in% c("1", "2", "3", "4", "5", "6"), na.rm = T) / sum(!is.na(.SD$C2_G)),
+        pctStimulantEver_C2 = 100 * sum(C2_H %in% c("1", "2", "3", "4", "5", "6"), na.rm = T) / sum(!is.na(.SD$C2_H)),
+        pctSedativeEver_C2 = 100 * sum(C2_I %in% c("1", "2", "3", "4", "5", "6"), na.rm = T) / sum(!is.na(.SD$C2_I)),
+        pctCocaineEver_C2 = 100 * sum(C2_K %in% c("1", "2", "3", "4", "5", "6"), na.rm = T) / sum(!is.na(.SD$C2_K)),
+        pctFoilEver_C2 = 100 * sum(C2_W %in% c("1", "2", "3", "4", "5", "6"), na.rm = T) / sum(!is.na(.SD$C2_W)),
+        pctD2_01 = 100 * sum(D2_01 %in% c("1", "2", "3", "4"), na.rm = T) / sum(!is.na(.SD$D2_01)),
+        pctD2_01_MonthlyPlus = 100 * sum(D2_01 %in% c("2", "3", "4"), na.rm = T) / sum(!is.na(.SD$D2_01)),
+        pctD2_02 = 100 * sum(D2_01 %in% c("1", "2", "3", "4"), na.rm = T) / sum(!is.na(.SD$D2_02)),
+        pctD2_02_MonthlyPlus = 100 * sum(D2_02 %in% c("2", "3", "4"), na.rm = T) / sum(!is.na(.SD$D2_02)),
+        pctD2_03 = 100 * sum(D2_02 %in% c("1", "2", "3", "4"), na.rm = T) / sum(!is.na(.SD$D2_03)),
+        pctD2_03_MonthlyPlus = 100 * sum(D2_03 %in% c("2", "3", "4"), na.rm = T) / sum(!is.na(.SD$D2_03)),
+        pctD2_04 = 100 * sum(D2_04 %in% c("1", "2", "3", "4"), na.rm = T) / sum(!is.na(.SD$D2_04)),
+        pctD2_04_MonthlyPlus = 100 * sum(D2_04 %in% c("2", "3", "4"), na.rm = T) / sum(!is.na(.SD$D2_04)),
+        pctD2_05 = 100 * sum(D2_05 %in% c("1", "2", "3", "4"), na.rm = T) / sum(!is.na(.SD$D2_05)),
+        pctD2_05_MonthlyPlus = 100 * sum(D2_05 %in% c("2", "3", "4"), na.rm = T) / sum(!is.na(.SD$D2_05)),
+        pctD2_06 = 100 * sum(D2_06 %in% c("1", "2", "3", "4"), na.rm = T) / sum(!is.na(.SD$D2_06)),
+        pctD2_06_MonthlyPlus = 100 * sum(D2_06 %in% c("2", "3", "4"), na.rm = T) / sum(!is.na(.SD$D2_06)),
+        pctD3_ever = 100 * sum(D3 %in% c("1", "2"), na.rm = T) / sum(!is.na(.SD$D3)),
+        pctD3_12m = 100 * sum(D3 %in% c("2"), na.rm = T) / sum(!is.na(.SD$D3)),
+        pctD4_ever = 100 * sum(D4 %in% c("1", "2"), na.rm = T) / sum(!is.na(.SD$D4)),
+        pctD4_12m = 100 * sum(D4 %in% c("2"), na.rm = T) / sum(!is.na(.SD$D4)),
+        D234_N = sum(!is.na(.SD$D4)),
+        pctG4_01 = 100 * sum(G4_01 %in% c("1", "2", "3", "4"), na.rm = T) / sum(!is.na(.SD$G4_01)),
+        pctG4_01_MonthlyPlus = 100 * sum(G4_01 %in% c("2", "3", "4"), na.rm = T) / sum(!is.na(.SD$G4_01)),
+        pctG4_02 = 100 * sum(G4_01 %in% c("1", "2", "3", "4"), na.rm = T) / sum(!is.na(.SD$G4_02)),
+        pctG4_02_MonthlyPlus = 100 * sum(G4_02 %in% c("2", "3", "4"), na.rm = T) / sum(!is.na(.SD$G4_02)),
+        pctG4_03 = 100 * sum(G4_02 %in% c("1", "2", "3", "4"), na.rm = T) / sum(!is.na(.SD$G4_03)),
+        pctG4_03_MonthlyPlus = 100 * sum(G4_03 %in% c("2", "3", "4"), na.rm = T) / sum(!is.na(.SD$G4_03)),
+        pctG4_04 = 100 * sum(G4_04 %in% c("1", "2", "3", "4"), na.rm = T) / sum(!is.na(.SD$G4_04)),
+        pctG4_04_MonthlyPlus = 100 * sum(G4_04 %in% c("2", "3", "4"), na.rm = T) / sum(!is.na(.SD$G4_04)),
+        pctG4_05 = 100 * sum(G4_05 %in% c("1", "2", "3", "4"), na.rm = T) / sum(!is.na(.SD$G4_05)),
+        pctG4_05_MonthlyPlus = 100 * sum(G4_05 %in% c("2", "3", "4"), na.rm = T) / sum(!is.na(.SD$G4_05)),
+        pctG4_06 = 100 * sum(G4_06 %in% c("1", "2", "3", "4"), na.rm = T) / sum(!is.na(.SD$G4_06)),
+        pctG4_06_MonthlyPlus = 100 * sum(G4_06 %in% c("2", "3", "4"), na.rm = T) / sum(!is.na(.SD$G4_06)),
+        pctG4_07 = 100 * sum(G4_07 %in% c("1", "2", "3", "4"), na.rm = T) / sum(!is.na(.SD$G4_07)),
+        pctG4_07_MonthlyPlus = 100 * sum(G4_07 %in% c("2", "3", "4"), na.rm = T) / sum(!is.na(.SD$G4_07)),
+        pctG4_08 = 100 * sum(G4_08 %in% c("1", "2", "3", "4"), na.rm = T) / sum(!is.na(.SD$G4_08)),
+        pctG4_08_MonthlyPlus = 100 * sum(G4_08 %in% c("2", "3", "4"), na.rm = T) / sum(!is.na(.SD$G4_08)),
+        pctG4_09 = 100 * sum(G4_09 %in% c("1", "2", "3", "4"), na.rm = T) / sum(!is.na(.SD$G4_09)),
+        pctG4_09_MonthlyPlus = 100 * sum(G4_09 %in% c("2", "3", "4"), na.rm = T) / sum(!is.na(.SD$G4_09)),
+        pctG4_10 = 100 * sum(G4_10 %in% c("1", "2", "3", "4"), na.rm = T) / sum(!is.na(.SD$G4_10)),
+        pctG4_10_MonthlyPlus = 100 * sum(G4_10 %in% c("2", "3", "4"), na.rm = T) / sum(!is.na(.SD$G4_10)),
+        pctG4_11 = 100 * sum(G4_11 %in% c("1", "2", "3", "4"), na.rm = T) / sum(!is.na(.SD$G4_11)),
+        pctG4_11_MonthlyPlus = 100 * sum(G4_11 %in% c("2", "3", "4"), na.rm = T) / sum(!is.na(.SD$G4_11)),
+        G4_N = sum(!is.na(.SD$G4_01)),
+        pctJ8_01 = 100 * sum(J8_01 %in% c("1", "2", "3", "4"), na.rm = T) / sum(!is.na(.SD$J8_01)),
+        pctJ8_01_ModeratelyPlus = 100 * sum(J8_01 %in% c("2", "3", "4"), na.rm = T) / sum(!is.na(.SD$J8_01)),
+        pctJ8_02 = 100 * sum(J8_01 %in% c("1", "2", "3", "4"), na.rm = T) / sum(!is.na(.SD$J8_02)),
+        pctJ8_02_ModeratelyPlus = 100 * sum(J8_02 %in% c("2", "3", "4"), na.rm = T) / sum(!is.na(.SD$J8_02)),
+        pctJ8_03 = 100 * sum(J8_02 %in% c("1", "2", "3", "4"), na.rm = T) / sum(!is.na(.SD$J8_03)),
+        pctJ8_03_ModeratelyPlus = 100 * sum(J8_03 %in% c("2", "3", "4"), na.rm = T) / sum(!is.na(.SD$J8_03)),
+        pctJ8_04 = 100 * sum(J8_04 %in% c("1", "2", "3", "4"), na.rm = T) / sum(!is.na(.SD$J8_04)),
+        pctJ8_04_ModeratelyPlus = 100 * sum(J8_04 %in% c("2", "3", "4"), na.rm = T) / sum(!is.na(.SD$J8_04)),
+        pctJ8_05 = 100 * sum(J8_05 %in% c("1", "2", "3", "4"), na.rm = T) / sum(!is.na(.SD$J8_05)),
+        pctJ8_05_ModeratelyPlus = 100 * sum(J8_05 %in% c("2", "3", "4"), na.rm = T) / sum(!is.na(.SD$J8_05)),
+        pctJ8_06 = 100 * sum(J8_06 %in% c("1", "2", "3", "4"), na.rm = T) / sum(!is.na(.SD$J8_06)),
+        pctJ8_06_ModeratelyPlus = 100 * sum(J8_06 %in% c("2", "3", "4"), na.rm = T) / sum(!is.na(.SD$J8_06)),
+        pctJ8_07 = 100 * sum(J8_07 %in% c("1", "2", "3", "4"), na.rm = T) / sum(!is.na(.SD$J8_07)),
+        pctJ8_07_ModeratelyPlus = 100 * sum(J8_07 %in% c("2", "3", "4"), na.rm = T) / sum(!is.na(.SD$J8_07)),
+        pctJ8_08 = 100 * sum(J8_08 %in% c("1", "2", "3", "4"), na.rm = T) / sum(!is.na(.SD$J8_08)),
+        pctJ8_08_ModeratelyPlus = 100 * sum(J8_08 %in% c("2", "3", "4"), na.rm = T) / sum(!is.na(.SD$J8_08)),
+        pctJ8_09 = 100 * sum(J8_09 %in% c("1", "2", "3", "4"), na.rm = T) / sum(!is.na(.SD$J8_09)),
+        pctJ8_09_ModeratelyPlus = 100 * sum(J8_09 %in% c("2", "3", "4"), na.rm = T) / sum(!is.na(.SD$J8_09)),
+        pctJ8_10 = 100 * sum(J8_10 %in% c("1", "2", "3", "4"), na.rm = T) / sum(!is.na(.SD$J8_10)),
+        pctJ8_10_ModeratelyPlus = 100 * sum(J8_10 %in% c("2", "3", "4"), na.rm = T) / sum(!is.na(.SD$J8_10)),
+        pctJ8_11 = 100 * sum(J8_11 %in% c("1", "2", "3", "4"), na.rm = T) / sum(!is.na(.SD$J8_11)),
+        pctJ8_11_ModeratelyPlus = 100 * sum(J8_11 %in% c("2", "3", "4"), na.rm = T) / sum(!is.na(.SD$J8_11)),
+        pctJ8_12 = 100 * sum(J8_12 %in% c("1", "2", "3", "4"), na.rm = T) / sum(!is.na(.SD$J8_12)),
+        pctJ8_12_ModeratelyPlus = 100 * sum(J8_12 %in% c("2", "3", "4"), na.rm = T) / sum(!is.na(.SD$J8_12)),
+        J8_N = sum(!is.na(.SD$J8_01))
+      ), by = c("District", "SchoolYear")]
       
       write.xlsx(
         SUMMARY,
@@ -593,19 +607,15 @@ SUMMARY <- Qs[, list(
         na = "",
         rowNames = FALSE
       )
-      
-      return(summary)
     }, error = function(e) {
       message("Error generating site summary: ", e$message)
-      return(data.table())
     })
-    
     
     message("Processing complete!")
     return(Qs)
     
   }, error = function(e) {
     message("Error in process_questionnaires: ", e$message)
-    return(Qs)
+    return(data.table())
   })
 }
