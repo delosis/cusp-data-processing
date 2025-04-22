@@ -140,7 +140,6 @@ The system includes procedures for identifying and handling duplicate records an
 4. **Quality Control**
    - Identifies nameless matches for manual review
    - Detects date discrepancies between matched records
-   - Verifies matches against school attendance records
    - Flags inconsistent matches for manual review
    - Supports manual override through QC files
 
