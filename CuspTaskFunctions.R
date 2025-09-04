@@ -18,8 +18,20 @@ QCflagQdata <- function(QData) {
   # Create a copy to avoid modifying the original
   QData_copy <- copy(QData)
   
+  # CRAFFT branching inconsistency - Part B branched on all 0 in part A rather than on no 1 
+  QData_copy[, QC_CRAFFT_BRANCHING := as.integer(safeSD(.SD,c("C1A_A", "C1A_B", "C1A_C"), na.rm = TRUE) < 1 &
+                                                    (
+                                                     !is.na(C1B_B) |
+                                                       !is.na(C1B_C) |
+                                                       !is.na(C1B_D) |
+                                                       !is.na(C1B_E) |
+                                                       !is.na(C1B_F)
+                                                   )), .SDcols = ]
+  
   # DEPAPO Foil QC - now using C2_W (SEMORON)
   QData_copy[, QC_DEPAPO_FOIL := as.integer(!is.na(C2_W) & C2_W > 0)]
+  
+  
   
   # DEPAPO Uncommon > 2.5 QC
   # TODO: Review this list of uncommon drugs for CUSP - the list has expanded significantly
@@ -104,28 +116,28 @@ deriveCUSPSURPS <- function(df, requiresReverseCoding = FALSE, requiresRotating 
   h_cols <- grep("A1_aR?$|A1_dR?$|A1_gR?$|A1_mR?$|A1_q|A1_tR?$|A1_wR?$", names(df), value = TRUE)
   df[, `:=`(
     h_mean = rowMeans(.SD, na.rm = TRUE),
-    h_sum = rowSums(.SD, na.rm = TRUE)
+    h_sum = rowSums(.SD)
   ), .SDcols = h_cols]
   
   # Anxiety Sensitivity
   as_cols <- grep("A1_h|A1_j|A1_n|A1_r|A1_u", names(df), value = TRUE)
   df[, `:=`(
     as_mean = rowMeans(.SD, na.rm = TRUE),
-    as_sum = rowSums(.SD, na.rm = TRUE)
+    as_sum = rowSums(.SD)
   ), .SDcols = as_cols]
   
   # Impulsivity
   imp_cols <- grep("A1_b$|A1_e|A1_k|A1_o|A1_v", names(df), value = TRUE)
   df[, `:=`(
     imp_mean = rowMeans(.SD, na.rm = TRUE),
-    imp_sum = rowSums(.SD, na.rm = TRUE)
+    imp_sum = rowSums(.SD)
   ), .SDcols = imp_cols]
   
   # Sensation Seeking
   ss_cols <- grep("A1_c$|A1_f|A1_i|A1_l|A1_p|A1_s", names(df), value = TRUE)
   df[, `:=`(
     ss_mean = rowMeans(.SD, na.rm = TRUE),
-    ss_sum = rowSums(.SD, na.rm = TRUE)
+    ss_sum = rowSums(.SD)
   ), .SDcols = ss_cols]
   
   return(df)
@@ -674,12 +686,13 @@ deriveQuestionnaireVariables <- function(Qs) {
   Qs <- recodeVariables(Qs, sdqReverseVariables, function(x) {2-x})
   
   # Recode C2_D for CUDIT scoring
+   # Note it is summed twice so the recoded values are doubled
   Qs[, C2_D_CUDIT := fcase(
     C2_D %in% c("0", "1"), "0",
-    C2_D == "2", "1",
-    C2_D == "3", "2",
-    C2_D == "4", "3",
-    C2_D %in% c("5", "6"), "4",
+    C2_D == "2", "2",
+    C2_D == "3", "4",
+    C2_D == "4", "6",
+    C2_D %in% c("5", "6"), "8",
     default = NA_character_
   )]
   Qs[, C2_D_CUDIT := as.numeric(C2_D_CUDIT)]
@@ -692,6 +705,35 @@ deriveQuestionnaireVariables <- function(Qs) {
     default = NA_character_
   )]
   Qs[, G4_05_CUDIT := as.numeric(G4_05_CUDIT)]
+  
+  # Recode C2_A for AUDIT scoring
+  Qs[, C2_A_AUDIT := fcase(
+    C2_A %in% c("0", "1"), "0",
+    C2_A == "2", "1",
+    C2_A == "3", "2",
+    C2_A == "4", "3",
+    C2_A %in% c("5", "6"), "4",
+    default = NA_character_
+  )]
+  Qs[, C2_A_AUDIT := as.numeric(C2_A_AUDIT)]
+  
+  # Recode D3 for AUDIT scoring
+  Qs[, D3_AUDIT := fcase(
+    D3 == "0", "0",
+    D3 == "1", "2",
+    D3 == "3", "4",
+    default = NA_character_
+  )]
+  Qs[, D3_AUDIT := as.numeric(D3_AUDIT)]
+  
+  # Recode D4 for AUDIT scoring
+  Qs[, D4_AUDIT := fcase(
+    D4 == "0", "0",
+    D4 == "1", "2",
+    D4 == "3", "4",
+    default = NA_character_
+  )]
+  Qs[, D4_AUDIT := as.numeric(D4_AUDIT)]
   
   # SURPS variables - note use of 'R' suffix for reversed items
   surps_vars <- list(
@@ -708,9 +750,10 @@ deriveQuestionnaireVariables <- function(Qs) {
   }
   
   # Calculate SURPS total as sum of subscales
+  #
   surps_cols <- paste0("SURPS_", names(surps_vars))
   Qs[, SURPS_Total := rowSums(.SD), .SDcols = surps_cols]
-  Qs[, SURPS_Total_Mean := rowMeans(.SD), .SDcols = surps_cols]
+  Qs[, SURPS_Total_Mean := rowMeans(.SD, na.rm = TRUE), .SDcols = surps_cols]
   
   # CRAFFT variables
   crafft_part_a <- c("C1A_A", "C1A_B", "C1A_C")
@@ -735,7 +778,7 @@ deriveQuestionnaireVariables <- function(Qs) {
   Qs[, MAAQ_Total_Mean := safeSD(.SD, maaq_vars, fun = rowMeans, na.rm = TRUE)]
   
   # AUDIT variables
-  audit_vars <- c("C2_A", "D2_01", "D2_02", "D2_03", "D2_04", "D2_05", "D2_06", "D1", "D3", "D4")
+  audit_vars <- c("C2_A_AUDIT", "D2_01", "D2_02", "D2_03", "D2_04", "D2_05", "D2_06", "D1", "D3_AUDIT", "D4_AUDIT")
   Qs[, AUDIT_Total := safeSD(.SD, audit_vars)]
   Qs[, AUDIT_Total_Mean := safeSD(.SD, audit_vars, fun = rowMeans, na.rm = TRUE)]
   
@@ -746,7 +789,7 @@ deriveQuestionnaireVariables <- function(Qs) {
   
   # CUDIT variables - note use of recoded variables
   cudit_vars <- c("C2_D_CUDIT", "G4_07", "G4_08", "G4_09", "G4_10", "G4_11", "G4_05_CUDIT")
-  Qs[, CUDIT_Total := safeSD(.SD, cudit_vars), .SDcols = cudit_vars]
+  Qs[, CUDIT_Total := safeSD(.SD, cudit_vars), .SDcols = cudit_vars] 
   Qs[, CUDIT_Total_Mean := safeSD(.SD, cudit_vars, fun = rowMeans, na.rm = TRUE), .SDcols = cudit_vars]
   Qs[, CUDIT_Median := safeSD(.SD, cudit_vars, fun = function(x) apply(x, 1, median, na.rm = TRUE)), .SDcols = cudit_vars]
   
@@ -791,7 +834,7 @@ deriveQuestionnaireVariables <- function(Qs) {
   # Calculate Brief COPE total as sum of all subscales
   brief_cope_cols <- paste0("Brief_COPE_", names(brief_cope_vars))
   Qs[, Brief_COPE_Total := rowSums(.SD), .SDcols = brief_cope_cols]
-  Qs[, Brief_COPE_Total_Mean := rowMeans(.SD), .SDcols = brief_cope_cols]
+  Qs[, Brief_COPE_Total_Mean := rowMeans(.SD, na.rm = TRUE), .SDcols = brief_cope_cols]
   
   # APSS variables
   apss_vars <- c(paste0("J10_0", 1:5), "J10_08", "J10_09")
@@ -835,7 +878,7 @@ deriveQuestionnaireVariables <- function(Qs) {
   # Calculate SDQ total as sum of all subscales
   sdq_cols <- paste0("SDQ_", names(sdq_vars))
   Qs[, SDQ_Total := rowSums(.SD), .SDcols = sdq_cols]
-  Qs[, SDQ_Total_Mean := rowMeans(.SD), .SDcols = sdq_cols]
+  Qs[, SDQ_Total_Mean := rowMeans(.SD, na.rm = TRUE), .SDcols = sdq_cols]
   
   return(Qs)
 } 

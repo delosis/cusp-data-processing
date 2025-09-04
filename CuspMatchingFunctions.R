@@ -2,6 +2,205 @@
 library(stringdist)
 library(data.table)
 
+get_matching <- function(matching, .SD, timepoint,  max_dist = 3, skipPotentialCheck = FALSE) {
+  min_days<-0
+  max_days<-0
+  if(timepoint == "duplicate"){
+    min_days<--10
+    max_days<-10
+  }
+  if(timepoint == "tp1"){
+    min_days<-150
+    max_days<-551
+  }
+  if(timepoint == "tp2"){
+    min_days<-550
+    max_days<-950
+  }
+  
+  
+  # remove fake names - leave potential ones for now
+  if(!is.na(.SD$school) & !is.na(.SD$name) &
+     grepl('fake name', .SD$school, ignore.case=TRUE) &
+     !grepl('potential fake name', .SD$school, ignore.case=TRUE)) {
+    .SD$name <- NA_character_
+  }
+  
+  if(!skipPotentialCheck & !is.na(.SD$school) & !is.na(.SD$name) &
+     grepl('potential fake name', .SD$school, ignore.case=TRUE)) {
+    # if this is a potential fake name try first allowing the fake names
+    matchWithName <- get_matching(matching, .SD, timepoint, max_dist, TRUE) # Pass 'matching' data
+    
+    if(!is.na(matchWithName)) {
+      return(matchWithName)
+    } else {
+      # remove the fake name
+      .SD$name <- NA_character_
+    }
+  }
+  
+  # Subset based on strict criteria (date of birth, gender) and time window
+  # School is required if present in the source row
+  subset_data <- matching[User.code != .SD$User.code &
+                            (is.na(.SD$schoolID) | trimws(tolower(schoolID)) == trimws(tolower(.SD$schoolID)) |
+                               (grepl("dss", tolower(schoolID)) & grepl("dss", tolower(.SD$schoolID)))) &
+                            RegSample == .SD$RegSample &
+                            (B1=="REFUSE" | .SD$B1 =="REFUSE" | B1 == .SD$B1) &
+                            (B5 %in% c("REFUSE", "4", "3") | .SD$B5 %in% c("REFUSE", "4", "3") | B5 == .SD$B5) &
+                            as.numeric(date_of_testing - .SD$date_of_testing, units = "days") > min_days &
+                            as.numeric(date_of_testing - .SD$date_of_testing, units = "days") < max_days]
+  
+  # remove fake names (but not potentials) from subset
+  subset_data[grepl('fake name', school, ignore.case =TRUE) &
+                !grepl('potential fake name', school, ignore.case=TRUE),]$name <- NA_character_
+  
+  # --- Enhanced Name Matching Logic ---
+  if (nrow(subset_data) > 0 && !is.na(.SD$name)) {
+    
+    source_name_norm <- trimws(tolower(.SD$name))
+    target_names_norm <- trimws(tolower(subset_data$name))
+    
+    # Function to generate name permutations, now more robust for multiple middle names
+    generate_name_permutations <- function(full_name) {
+      parts <- strsplit(full_name, split = "\\s+")[[1]] # Use regex for one or more spaces
+      parts <- parts[parts != ""] # Remove empty strings if multiple spaces
+      if (length(parts) == 0 || all(is.na(parts))) return(character(0))
+      
+      permutations <- c()
+      
+      # 1. Add the full name itself
+      permutations <- c(permutations, full_name)
+      
+      # Assume the first part is the first name and the last part is the last name
+      first_name <- parts[1]
+      last_name <- parts[length(parts)]
+      
+      # 2. Add First Name + Last Name (common simplification)
+      if (length(parts) >= 2) {
+        permutations <- c(permutations, paste(first_name, last_name))
+      }
+      
+      # 3. Add Last Name only (for cases where only last name is entered or highly preferred)
+      permutations <- c(permutations, last_name)
+      
+      # 4. Add First Name only
+      permutations <- c(permutations, first_name)
+      
+      # 5. Handle Middle Names (more sophisticated handling for 1 or more middle names)
+      if (length(parts) > 2) { # If there are parts between first and last
+        middle_names <- parts[2:(length(parts) - 1)]
+        
+        # Try various combinations with middle names:
+        
+        # First + all middle names + Last
+        # (This is the full name, already added, but useful if parts were reordered)
+        # For safety, ensure this is consistently formed.
+        permutations <- c(permutations, paste(c(first_name, middle_names, last_name), collapse = " "))
+        
+        # First + First Middle Name + Last Name (e.g., John David Smith -> John David Smith)
+        # This covers cases where only the first middle name is consistently used.
+        if (length(middle_names) >= 1) {
+          permutations <- c(permutations, paste(first_name, middle_names[1], last_name))
+        }
+        
+        # First + Last Middle Name + Last Name (e.g., John David Michael Smith -> John Michael Smith)
+        # Covers cases where the last middle name might be preferred.
+        if (length(middle_names) >= 2) {
+          permutations <- c(permutations, paste(first_name, middle_names[length(middle_names)], last_name))
+        }
+        
+        # If there are two middle names (e.g., David Michael)
+        if (length(middle_names) == 2) {
+          # First + combined middle names + Last (e.g., John DavidMichael Smith - if they omit space)
+          # This is less common but can happen with OCR errors or data entry.
+          permutations <- c(permutations, paste(first_name, paste(middle_names, collapse=""), last_name))
+          
+          # First + First Middle Name (e.g., John David)
+          permutations <- c(permutations, paste(first_name, middle_names[1]))
+          # First + Second Middle Name (e.g., John Michael)
+          permutations <- c(permutations, paste(first_name, middle_names[2]))
+        }
+      }
+      
+      # Remove duplicates, NAs, and empty strings, trim whitespace
+      unique(na.omit(trimws(permutations[nzchar(permutations)])))
+    }
+    
+    source_name_perms <- generate_name_permutations(source_name_norm)
+    
+    best_match_code <- NA_character_
+    min_overall_dist <- Inf
+    
+    # Iterate through potential target matches
+    for (i in seq_len(nrow(subset_data))) {
+      target_name_curr <- target_names_norm[i]
+      if (is.na(target_name_curr)) next
+      
+      target_name_perms <- generate_name_permutations(target_name_curr)
+      
+      # Find the best fuzzy match between any permutation of source and target
+      current_best_dist <- Inf
+      plausible_pool<-0
+      for (s_perm in source_name_perms) {
+        for (t_perm in target_name_perms) {
+          # Calculate max_dist more dynamically based on the length of the shorter permutation
+          dynamic_max_dist <- min(nchar(s_perm), nchar(t_perm)) * 0.25 # Adjust factor as needed
+          if (dynamic_max_dist < 1) dynamic_max_dist <- 1 # Ensure at least 1 edit distance allowed
+          
+          # Use Jaro-Winkler as it's often good for names, or keep Damerau-Levenshtein
+          # For more flexibility, you might try both and prioritize Jaro-Winkler
+          dist_dl <- stringdist(s_perm, t_perm, method = "dl")
+          dist_jw <- stringdist(s_perm, t_perm, method = "jw") # Jaro-Winkler similarity
+          
+          # Convert Jaro-Winkler similarity to a distance for comparison with max_dist
+          # Jaro-Winkler similarity is 0 to 1, higher is better. We need 0 to Inf, lower is better.
+          # A simple conversion could be 1 - similarity for distance.
+          # We'll use a threshold for Jaro-Winkler similarity, say > 0.85
+          
+          if (dist_jw > 0.85 && dist_dl <= dynamic_max_dist) { # Prioritize high Jaro-Winkler AND reasonable Levenshtein
+            if (dist_dl < current_best_dist) {
+              plausible_pool <- plausible_pool + 1
+              current_best_dist <- dist_dl
+            }
+          } else if (dist_dl <= dynamic_max_dist && dist_dl < current_best_dist) {
+            plausible_pool <- plausible_pool + 1
+            current_best_dist <- dist_dl
+          }
+        }
+      }
+      
+      # If a better overall match is found for this target individual
+      if (current_best_dist < min_overall_dist) {
+        min_overall_dist <- current_best_dist
+        best_match_code <- as.character(subset_data[i, User.code])
+      }
+    }
+    
+    if (!is.na(best_match_code) && min_overall_dist != Inf) {
+      # You might want to log the specific permutations that matched, or the distance
+       message(paste("Fuzzy Match Found:", .SD$name, "with", subset_data[subset_data$User.code == best_match_code, name]))
+       message(paste("Fuzzy Match Pool:", plausible_pool))
+      return(best_match_code)
+    } else {
+      return(NA_character_)
+    }
+  } else {
+    # (existing nameless match logic remains here)
+    #if there is only one potential match (source name must be empty here - match MUST HAVE DOB)
+    if(nrow(subset_data)==1 & subset_data[1, B1] != "REFUSE") {
+      message(paste("Single nameless match:",.SD$User.code, "with", subset_data[1, User.code]))
+      return(paste0('#NAMELESS#_',as.character(subset_data[1, User.code])))
+    }
+    if(nrow(subset_data)>1 & subset_data[1, B1] != "REFUSE") {
+      message(paste("Multiple nameless match:",.SD$User.code, "with", subset_data[1, User.code]))
+      return(paste0('#NAMELESSMULTIPLE#_',as.character(subset_data[1, User.code])))
+    }
+    return(NA_character_)
+  }
+}
+
+
+
 #' Find matching records based on criteria
 #' @param .SD Data to match against
 #' @param min_days Minimum days between records
@@ -9,7 +208,7 @@ library(data.table)
 #' @param max_dist Maximum string distance for name matching
 #' @param skipPotentialCheck Skip potential fake name check
 #' @return Matching user code or NA
-get_matching <- function(.SD, min_days, max_days, max_dist = 3, skipPotentialCheck = FALSE) {
+get_matching_original <- function(.SD, min_days, max_days, max_dist = 3, skipPotentialCheck = FALSE) {
   #remove fake names - leave potential ones for now
   if(!is.na(.SD$school) & !is.na(.SD$name) & 
      grepl('fake name', .SD$school, ignore.case=TRUE) & 
@@ -173,83 +372,150 @@ get_date_discrepancies <- function(matching, tolerance_days = 30) {
   })
 }
 
-#' Resolve duplicates in matching data
+#' Resolve duplicates in matching data, considering manual QC suggestions
 #' @param matching Data frame containing matching data
 #' @return List containing resolved data frame and duplicate mapping
 #' @export
+
 resolve_duplicates <- function(matching) {
   # Create copy to avoid modifying original
+  
   resolved <- copy(matching)
   
+  
+  
   # Initialize duplicate mapping with columns for Y2/Y3 matches
+  
   duplicate_map <- data.table(
     kept_id = character(),
+    
     removed_id = character(),
+    
     reason = character(),
+    
     y2_match = character(),
+    
     y3_match = character()
+    
   )
   
+  
+  
   # Find all duplicate sets based on AutoDuplicate only
+  
   # (Y2/Y3 matches are not duplicates, they're longitudinal data points)
-  duplicates <- resolved[!is.na(AutoDuplicate), .(
+  
+  duplicates <- resolved[!is.na(AutoDuplicate) | !is.na(ManualQC.SuggestedDuplicate), .(
     User.code,
-    AutoDuplicate = gsub("^#NAMELESS(MULTIPLE)?#_", "", AutoDuplicate),
+    AutoDuplicate = ifelse(!is.na(AutoDuplicate), gsub("^#NAMELESS(MULTIPLE)?#_", "", AutoDuplicate), ManualQC.SuggestedDuplicate),
     date_of_testing
   )]
   
+  
+  
   # Process each set of duplicates
+  
   for (i in 1:nrow(duplicates)) {
     dup_set <- duplicates[i]
+    
     pair <- c(dup_set$User.code, dup_set$AutoDuplicate)
     
+    
+    
     # Get full records for the pair
+    
     records <- resolved[User.code %in% pair]
+    
+    
     
     if (nrow(records) > 1) {
       # Keep the earliest record
+      
       keep_idx <- which.min(records$date_of_testing)
+      
       keep_record <- records[keep_idx]
+      
       remove_records <- records[setdiff(1:nrow(records), keep_idx)]
       
+      
+      
       # For each removed record, check if it had Y2/Y3 matches
+      
       for (i in 1:nrow(remove_records)) {
         removed <- remove_records[i]
         
+        
+        
         # If kept record has no Y2 match but removed record does, transfer it
-        if (is.na(keep_record$Y2AutoMatch) && !is.na(removed$Y2AutoMatch)) {
+        
+        if (is.na(keep_record$Y2AutoMatch) &&
+            !is.na(removed$Y2AutoMatch)) {
           keep_record$Y2AutoMatch <- removed$Y2AutoMatch
+          
         }
+        
+        
         
         # If kept record has no Y3 match but removed record does, transfer it
-        if (is.na(keep_record$Y3AutoMatch) && !is.na(removed$Y3AutoMatch)) {
+        
+        if (is.na(keep_record$Y3AutoMatch) &&
+            !is.na(removed$Y3AutoMatch)) {
           keep_record$Y3AutoMatch <- removed$Y3AutoMatch
+          
         }
         
+        
+        
         # Record mapping including Y2/Y3 matches
-        duplicate_map <- rbind(duplicate_map, data.table(
-          kept_id = keep_record$User.code,
-          removed_id = removed$User.code,
-          reason = "earliest",
-          y2_match = ifelse(!is.na(removed$Y2AutoMatch), removed$Y2AutoMatch, NA_character_),
-          y3_match = ifelse(!is.na(removed$Y3AutoMatch), removed$Y3AutoMatch, NA_character_)
-        ))
+        
+        duplicate_map <- rbind(
+          duplicate_map,
+          data.table(
+            kept_id = keep_record$User.code,
+            
+            removed_id = removed$User.code,
+            
+            reason = "earliest",
+            
+            y2_match = ifelse(
+              !is.na(removed$Y2AutoMatch),
+              removed$Y2AutoMatch,
+              NA_character_
+            ),
+            
+            y3_match = ifelse(
+              !is.na(removed$Y3AutoMatch),
+              removed$Y3AutoMatch,
+              NA_character_
+            )
+            
+          )
+        )
+        
       }
       
+      
+      
       # Update the kept record with any transferred Y2/Y3 matches
-      resolved[User.code == keep_record$User.code, 
-               `:=`(Y2AutoMatch = keep_record$Y2AutoMatch,
-                    Y3AutoMatch = keep_record$Y3AutoMatch)]
+      
+      resolved[User.code == keep_record$User.code, `:=`(Y2AutoMatch = keep_record$Y2AutoMatch,
+                                                        
+                                                        Y3AutoMatch = keep_record$Y3AutoMatch)]
+      
+      
       
       # Remove duplicates from resolved dataset
+      
       resolved <- resolved[!(User.code %in% remove_records$User.code)]
+      
     }
+    
   }
   
-  return(list(
-    resolved = resolved,
-    duplicate_map = duplicate_map
-  ))
+  
+  
+  return(list(resolved = resolved, duplicate_map = duplicate_map))
+  
 }
 
 #' Save duplicate resolution mapping
@@ -391,23 +657,17 @@ process_and_anonymize <- function(df) {
 process_questionnaires <- function(duplicate_map, Q1, Q2, current_date) {
    tryCatch({
     message("Starting questionnaire processing...")
-    
+    ## Note manually selecting the final response to each question AFTER merging the duplicate map 
+    ##  rather than using selectIteration function
     message("Downloading Q3 data...")
     Q3 <- tryCatch({
-      q3_base <- selectIteration(
-        downloadSingleDataFile("CUSP_Q3-BASIC_DIGEST"),
-        valid = FALSE,
-        completed = FALSE,
-        isQuestionnaire = TRUE
-      )
+      q3_base <-
+        downloadSingleDataFile("CUSP_Q3-BASIC_DIGEST")
+        
       setDT(q3_base)
       
-      q3_ubco <- selectIteration(
-        downloadSingleDataFile("CUSP_UBCO_DELTA_Q3-BASIC_DIGEST"),
-        valid = FALSE,
-        completed = FALSE,
-        isQuestionnaire = TRUE
-      )
+      q3_ubco <- 
+        downloadSingleDataFile("CUSP_UBCO_DELTA_Q3-BASIC_DIGEST")
       
       rbindlist(list(q3_base, q3_ubco), fill = TRUE)
     }, error = function(e) {
@@ -417,20 +677,12 @@ process_questionnaires <- function(duplicate_map, Q1, Q2, current_date) {
     
     message("Downloading Q4 data...")
     Q4 <- tryCatch({
-      q4_base <- selectIteration(
-        downloadSingleDataFile("CUSP_Q4-BASIC_DIGEST"),
-        valid = FALSE,
-        completed = FALSE,
-        isQuestionnaire = TRUE
-      )
+      q4_base <-
+        downloadSingleDataFile("CUSP_Q4-BASIC_DIGEST")
       setDT(q4_base)
       
-      q4_ontario <- selectIteration(
-        downloadSingleDataFile("CUSP_ONTARIO_Q4-BASIC_DIGEST"),
-        valid = FALSE,
-        completed = FALSE,
-        isQuestionnaire = TRUE
-      )
+      q4_ontario <- 
+        downloadSingleDataFile("CUSP_ONTARIO_Q4-BASIC_DIGEST")
       
       rbindlist(list(q4_base, q4_ontario), fill = TRUE)
     }, error = function(e) {
@@ -440,17 +692,16 @@ process_questionnaires <- function(duplicate_map, Q1, Q2, current_date) {
     
     message("Downloading Q5 data...")
     Q5 <- tryCatch({
-      q5 <- selectIteration(
-        downloadSingleDataFile("CUSP_Q5-BASIC_DIGEST"),
-        valid = FALSE,
-        completed = FALSE,
-        isQuestionnaire = TRUE
-      )
+      q5 <- 
+        downloadSingleDataFile("CUSP_Q5-BASIC_DIGEST")
       setDT(q5)
     }, error = function(e) {
-      message("Error downloading Q4 data: ", e$message)
+      message("Error downloading Q5 data: ", e$message)
       return(data.table())
     })
+    
+    
+
     
     message("Combining questionnaires...")
     Qs <- rbindlist(list(Q1, Q2, Q3, Q4, Q5), fill = TRUE)
@@ -460,21 +711,29 @@ process_questionnaires <- function(duplicate_map, Q1, Q2, current_date) {
       Qs[User.code == duplicate_map$removed_id[i], User.code := duplicate_map$kept_id[i]]
     }
     
+    ## Q3 contains the Variable C1B_A - this question is asked either in an array  ( with C1B_B etc ) or on its own depending on the responses to C1A_A
+    ## This mean that the the second version ( array ) will always take precedence unless we first of all remove the not shown versions
+    ## For this question alone we will NOT take a branched over response as the final output.
+    
     message("Cleaning and deduplicating...")
     Qs <- Qs[User.code != 'DEV', ]
     # Sort by Completed.Timestamp to ensure we keep the most recent entries when they have repeated a question.
     setorder(Qs, User.code, Trial, Completed.Timestamp)
     Qs <- Qs[Qs$Trial.result != 'skip_back', ]
+    Qs<-Qs[!(Trial=="C1B_A" & Trial.result =="not_shown")]
+    Qs <- Qs[Qs$Trial.result != 'not_shown_back', ]
     Qs <- Qs[Qs$Block != 'js', ]
     Qs <- Qs[!duplicated(subset(Qs, select = c(User.code, Trial)), fromLast = T), ]
     
     message("Rotating to wide format...")
     
-    # Extract date part from Completed.Timestamp
-    Qs$Date.Completed <- as.Date(Qs$Completed.Timestamp)
-
+    # Extract date part from Completed.Timestamp - set to min for each usercode to prevent multiple rows forming on rotation
+    # Same with Language - set to 
+    Qs[, Date.Completed := min(as.Date(Completed.Timestamp)), by = User.code]
+    Qs[, Initial.Language := head(Language,1), by = User.code]
+    
     # Rotate questionnaire with specific idVar
-    Qs <- rotateQuestionnaire(Qs, idVar = c("User.code", "Language", "Date.Completed"))
+    Qs <- rotateQuestionnaire(Qs, idVar = c("User.code", "Initial.Language", "Date.Completed"))
     setDT(Qs)
 
     setDT(registrationDF)

@@ -101,6 +101,10 @@ if (file.exists("checkpoint_registration.RData")) {
 
   # Rename user code column
   names(registrationDF)[names(registrationDF) == "psytoolsUserCode"] <- "User.code"
+  
+  # find registrations under the non-atomic registration endpoint ( covering a single session in OPfS - 8 registrations)
+  unusableUserCodes = registrationDF$User.code[duplicated(registrationDF$User.code)]
+  registrationDF<-registrationDF[!User.code %in% unusableUserCodes,]
 
   # Convert date to Date type
   registrationDF$date <- as.Date(registrationDF$date)
@@ -121,7 +125,7 @@ if (file.exists("checkpoint_questionnaires.RData")) {
     downloadSingleDataFile("CUSP_Q1-DIGEST_BASIC_SAMPLE_SQL"),
     valid = FALSE,
     completed = FALSE,
-    isQuestionnaire = TRUE
+    isQuestionnaire = FALSE
   )
   setDT(Q1)
 
@@ -130,11 +134,11 @@ if (file.exists("checkpoint_questionnaires.RData")) {
                 downloadSingleDataFile("CUSP_Q1_SHORT-DIGEST_BASIC_SAMPLE_SQL"),
                 valid = FALSE,
                 completed = FALSE,
-                isQuestionnaire = TRUE
+                isQuestionnaire = FALSE
               ),
               fill = T)
 
-  Q1 <- Q1[User.code != 'DEV', ]
+  Q1 <- Q1[User.code != 'DEV' & !User.code %in% unusableUserCodes, ]
 
   message("Q1 data processing complete. Starting Q2 data download and processing...")
   # Download and process Q2 data
@@ -142,16 +146,16 @@ if (file.exists("checkpoint_questionnaires.RData")) {
     downloadSingleDataFile("CUSP_Q2-DIGEST_BASIC_SAMPLE_SQL"),
     valid = FALSE,
     completed = FALSE,
-    isQuestionnaire = TRUE
+    isQuestionnaire = FALSE
   )
-  setDT(Q2)
+
 
   Q2 <- rbind(Q2,
               selectIteration(
                 downloadSingleDataFile("CUSP_ONTARIO_Q2-DIGEST_BASIC_SAMPLE_SQL"),
                 valid = FALSE,
                 completed = FALSE,
-                isQuestionnaire = TRUE
+                isQuestionnaire = FALSE
               ),
               fill = T)
 
@@ -160,7 +164,7 @@ if (file.exists("checkpoint_questionnaires.RData")) {
                 downloadSingleDataFile("CUSP_UBCO_DELTA_Q2-DIGEST_BASIC_SAMPLE_SQL"),
                 valid = FALSE,
                 completed = FALSE,
-                isQuestionnaire = TRUE
+                isQuestionnaire = FALSE
               ),
               fill = T)
 
@@ -169,24 +173,28 @@ if (file.exists("checkpoint_questionnaires.RData")) {
                 downloadSingleDataFile("CUSP_OPfS_Q2-DIGEST_BASIC_SAMPLE_SQL"),
                 valid = FALSE,
                 completed = FALSE,
-                isQuestionnaire = TRUE
+                isQuestionnaire = FALSE
               ),
               fill = T)
-
-  Q2 <- Q2[User.code != 'DEV', ]
+  setDT(Q2)
+  Q2 <- Q2[User.code != 'DEV' & !User.code %in% unusableUserCodes, ]
 
     message("Q2 data processing complete. Saving Q1 and Q2 checkpoint...")
     save(Q1, Q2, file = "checkpoint_questionnaires.RData")
 }
 
 # Clean Q1 and Q2 data
-Q1 <- Q1[!duplicated(subset(Q1, select = c(User.code, Iteration, Trial)), fromLast = T), ]
-Q1 <- Q1[Q1$Trial.result != 'skip_back', ]
-Q1 <- Q1[Q1$Block != 'js', ]
 
-Q2 <- Q2[!duplicated(subset(Q2, select = c(User.code, Iteration, Trial)), fromLast = T), ]
+Q1 <- Q1[Q1$Trial.result != 'skip_back', ]
+Q1 <- Q1[Q1$Trial.result != 'not_shown_back', ]
+Q1 <- Q1[Q1$Block != 'js', ]
+Q1 <- Q1[!duplicated(subset(Q1, select = c(User.code, Trial)), fromLast = T), ]
+
 Q2 <- Q2[Q2$Trial.result != 'skip_back', ]
+Q2 <- Q2[Q2$Trial.result != 'not_shown_back', ]
 Q2 <- Q2[Q2$Block != 'js', ]
+Q2 <- Q2[!duplicated(subset(Q2, select = c(User.code, Trial)), fromLast = T), ]
+
 
 # Convert trial results to numeric
 Q1$Trial.result <- as.numeric(Q1$Trial.result)
@@ -203,10 +211,10 @@ Q2match <- rotateQuestionnaire(Q2, idVar = c("User.code"))
 setDT(SURPSmatch)
 setDT(Q2match)
 
-# Merge data
+# Merge data - CHANGED TO BRING IN RECORDS WITH NO Q2
 SURPSmatch <- samples[SURPSmatch, on = c(User.code = "User.code")]
 QsMatch <- registrationDF[SURPSmatch, on = c(User.code = "User.code")]
-matching <- QsMatch[Q2match, on = c(User.code = "User.code")]
+matching <- QsMatch[Q2match, on = c(User.code = "User.code"), nomatch = NA]
 
 
 message("Initial data processing complete. Saving pre-matching checkpoint...")
@@ -263,8 +271,8 @@ setkey(manualQCexcludeRid, rid, regSample)
 matching <- matching[!manualQCexcludeRid]
 
 # Set data tags for NS samples
-matching[date_of_testing<'2023-01-01' & RegSample=='CUSP_NS',"dataTag"] <- 'C1-T1'
-matching[date_of_testing>'2023-01-01' & RegSample=='CUSP_NS' & is.na(dataTag),"dataTag"] <- 'C2-T1'
+matching[date_of_testing<'2023-01-01' & RegSample=='CUSP_NS',"dataTag"] <- 'c1-t1'
+matching[date_of_testing>'2023-01-01' & RegSample=='CUSP_NS' & is.na(dataTag),"dataTag"] <- 'c2-t1'
 matching[RegSample=='CUSP_NS' & is.na(schoolID),schoolID := regmatches(User.code, regexpr("S\\d+CUSP", User.code))]
 
 message("Processing manual QC duplicates...")
@@ -315,12 +323,13 @@ if (file.exists("checkpoint_autoduplicate.RData")) {
   tryCatch({
     # Find duplicates and matches
     total_rows <- nrow(matching)
+    setDT(matching)
     for (i in 1:total_rows) {
       if(i %% 100 == 0) {
         message(sprintf("Processing AutoDuplicate matches: row %d of %d (%.1f%%)", 
                        i, total_rows, i/total_rows*100))
       }
-      set(matching, i, "AutoDuplicate", get_matching(matching[i, ], -10, 10))
+      set(matching, i, "AutoDuplicate", get_matching(matching, matching[i, ], "duplicate"))
     }
 
     message("AutoDuplicate matching complete. Saving checkpoint...")
@@ -340,12 +349,13 @@ if (file.exists("checkpoint_y2matches.RData")) {
   message("Starting/resuming Y2 matching...")
   tryCatch({
     total_rows <- nrow(matching)
+    setDT(matching)
     for (i in 1:total_rows) {
       if(i %% 100 == 0) {
         message(sprintf("Processing Y2 matches: row %d of %d (%.1f%%)", 
                        i, total_rows, i/total_rows*100))
       }
-      set(matching, i, "Y2AutoMatch", get_matching(matching[i, ], 150, 551))
+      set(matching, i, "Y2AutoMatch", get_matching(matching, matching[i, ],"tp1"))
     }
 
     message("Y2 matching complete. Saving checkpoint...")
@@ -365,12 +375,13 @@ if (file.exists("checkpoint_matching_complete.RData")) {
   message("Starting/resuming Y3 matching...")
   tryCatch({
     total_rows <- nrow(matching)
+    setDT(matching)
     for (i in 1:total_rows) {
       if(i %% 100 == 0) {
         message(sprintf("Processing Y3 matches: row %d of %d (%.1f%%)", 
                        i, total_rows, i/total_rows*100))
       }
-      set(matching, i, "Y3AutoMatch", get_matching(matching[i, ], 550, 950))
+      set(matching, i, "Y3AutoMatch", get_matching(matching, matching[i, ], "tp2"))
     }
 
     message("All matching complete! Saving final matching checkpoint...")
@@ -390,10 +401,10 @@ if (file.exists("checkpoint_resolution.RData")) {
   message("Starting/resuming duplicate resolution...")
   tryCatch({
     # Resolve duplicates and get mapping
+  setDT(matching)
     resolution_result <- resolve_duplicates(matching)
     matching <- resolution_result$resolved
     duplicate_map <- resolution_result$duplicate_map
-
     message("Duplicate resolution complete. Saving checkpoint...")
     save(matching, duplicate_map, file = "checkpoint_resolution.RData")
   }, error = function(e) {
@@ -453,6 +464,12 @@ matching_anon[qc_flags, on = "User.code", names(qc_flags)[-1] := mget(paste0("i.
 ns_data <- matching_anon[RegSample == "CUSP_NS", ]
 ubco_data <- matching_anon[RegSample == "CUSP_UBCO", ]
 ontario_data <- matching_anon[RegSample == "CUSP_ONTARIO", ]
+
+# ns_data <- matching[RegSample == "CUSP_NS", ]
+# ubco_data <- matching[RegSample == "CUSP_UBCO", ]
+# ontario_data <- matching[RegSample == "CUSP_ONTARIO", ]
+
+
 
 write.xlsx(
   ns_data,

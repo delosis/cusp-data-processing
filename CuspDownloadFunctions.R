@@ -256,12 +256,14 @@ selectIteration <- function(df,
     # NB changed to using Completed.Timestamp instead of iteration to allow deduplicated user codes to 
     # have their multiple attempts correctly selected from ( iterations will be shared )
     if(isQuestionnaire){
-      # Select just the LAST response on each question 
-      df <- df[!duplicated(subset(df, select=c(User.code, Iteration, Trial)), fromLast=T),]
       # remove skip_back flags
       df <- df[df$Trial.result !='skip_back',]
+      df <- df[df$Trial.result != 'not_shown_back', ]
       # remove js flags
       df <- df[df$Block !='js',]
+      # Select just the LAST response on each question 
+      df <- df[!duplicated(subset(df, select=c(User.code, Iteration, Trial)), fromLast=T),]
+
     } else {
       df <- merge(df,
                   aggregate(Completed.Timestamp ~ User.code,
