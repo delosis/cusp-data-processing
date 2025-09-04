@@ -15,15 +15,18 @@ The system implements several QC flags to identify potential data quality issues
 ### Questionnaire QC Flags
 
 1. **DEPAPO Foil QC** (`QC_DEPAPO_FOIL`)
+
    - Flagged when participant responds to the foil item (C2_W)
    - Indicates potential inattentive responding
 
 2. **DEPAPO Uncommon Drugs QC** (`QC_DEPAPO_UNCOMMON2.5`)
+
    - Flagged when mean score on uncommon drugs > 2.5
    - Uncommon drugs include: SPICE, STEROIDS, STIMULANTS, SEDATIVES, COCAINE, HEROIN, LSD
    - Indicates potential over-reporting or inattentive responding
 
 3. **SURPS One Answer QC** (`QC_SURPS_ONE_ANSWER`)
+
    - Flagged when all SURPS items have the same response
    - Indicates potential straight-lining or inattentive responding
 
@@ -34,6 +37,7 @@ The system implements several QC flags to identify potential data quality issues
 ### Task Performance QC Flags
 
 1. **PALP Task QC**
+
    - `PALP_QC_PALP_WORSE_THAN_CHANCE`: Performance worse than chance at 5% significance level
    - `PALP_QC_PALP_TOO_FAST`: Response times consistently below 200ms
 
@@ -46,22 +50,26 @@ The system implements several QC flags to identify potential data quality issues
 The school anonymization process follows these steps:
 
 1. **School ID Processing**
+
    - All school IDs are converted to lowercase
    - Test schools are filtered out
    - School IDs are mapped to anonymized 3-digit codes
 
 2. **Anonymization Process**
+
    - Uses a persistent mapping stored in `school_id_keys.env`
    - Each school receives a unique 3-digit code
    - Mapping is maintained across sessions
    - New schools are automatically assigned available codes
 
 3. **Data Protection**
+
    - Original school IDs are never stored in output files
    - School codes are randomly assigned
    - Mapping file is kept separate from data files
 
 4. **School Year Assignment**
+
    - Automatically assigned based on processed timestamp:
      - 20-21: After 2020-08-01
      - 21-22: After 2021-08-01
@@ -74,21 +82,23 @@ The school anonymization process follows these steps:
 
 ## Duplicate and Inter-Year Matching
 
-The system includes procedures for identifying and handling duplicate records and matching participants across different school years:
+The system includes sophisticated procedures for identifying and handling duplicate records and matching participants across different school years:
 
 ### Duplicate Detection
 
 1. **Manual QC Flags**
+
    - Uses `ManualQC.xlsx` to identify potential duplicates
    - Flags are set based on manual review of participant data
    - Includes `ManualQC.SuggestedDuplicate` field for potential matches
 
-2. **Automatic Matching**
+2. **Advanced Automatic Matching**
+
    - Matches are based on multiple criteria:
-     - School ID (if present)
-     - Name (with fuzzy matching using string distance)
+     - School ID (if present, with enhanced DSS handling)
+     - Name (with sophisticated fuzzy matching using multiple algorithms)
      - Date of birth
-     - Gende
+     - Gender
      - Time window between records
    - Handles fake names and potential fake names appropriately
    - Supports nameless matches when name is not available
@@ -103,29 +113,48 @@ The system includes procedures for identifying and handling duplicate records an
 ### Inter-Year Matching
 
 1. **Matching Process**
+
    - Uses separate fields for Y2 and Y3 matches (Y2AutoMatch, Y3AutoMatch)
    - Matches are stored in the same data structure as the original records
    - Original IDs are preserved in their respective years
    - **Note: Matching is forward-only - a participant in Year 3 will not be matched with their earlier timepoints, but their earlier timepoints will be linked to it**
    - Matching is based on:
-     - School ID (if present)
-     - Name similarity (with fuzzy matching)
+     - School ID (if present, with enhanced DSS handling)
+     - Name similarity (with advanced fuzzy matching)
      - Date of birth
      - Gender
      - Time window between records
 
 2. **Time Windows**
+
    - Time windows are strictly defined for different matching scenarios:
      - Duplicate detection: -10 to +10 days
      - Year 2 matching: 150 to 551 days (approximately 5-18 months)
      - Year 3 matching: 550 to 950 days (approximately 18-31 months)
-   - Name matching uses adaptive string distance:
-     - Distance threshold is 1/4 of first name length (minimum 0.1)
-     - Uses Damerau-Levenshtein distance with weighted operations:
-       - Deletions and insertions: 0.5 weight
-       - Substitutions and transpositions: 1.0 weight
 
-3. **Unexpected Delays**
+3. **Advanced Name Matching Algorithm**
+
+   - **Name Permutation Generation**: Creates multiple variations of each name:
+     - Full name (as entered)
+     - First name + Last name
+     - First name only
+     - Last name only
+     - Various middle name combinations (first+middle+last, first+last_middle+last, etc.)
+   - **Dual Distance Metrics**: Uses both Damerau-Levenshtein and Jaro-Winkler distances
+     - Jaro-Winkler similarity threshold: >0.85 (prioritizes high similarity)
+     - Damerau-Levenshtein distance: Dynamic threshold based on name length (25% of shorter name, minimum 1)
+   - **Comprehensive Matching**: Tests all permutations of source name against all permutations of target names
+   - **Best Match Selection**: Selects the match with the lowest overall distance
+   - **Quality Reporting**: Reports both the match found and the "plausible pool" count
+
+4. **Enhanced School ID Matching**
+
+   - Standard school ID matching (case-insensitive, trimmed)
+   - Special handling for DSS schools: matches any DSS school with any other DSS school
+   - Maintains school consistency within matches
+
+5. **Unexpected Delays**
+
    - Matches with date discrepancies are saved to a separate review file when:
      - Year 2 matches: Testing dates differ by more than 30 days from expected 1-year interval
      - Year 3 matches: Testing dates differ by more than 30 days from expected 2-year interval
@@ -137,13 +166,15 @@ The system includes procedures for identifying and handling duplicate records an
    - These discrepancies require manual verification before being accepted
    - Helps identify potential data quality issues or unusual testing patterns
 
-4. **Quality Control**
+6. **Quality Control**
+
    - Identifies nameless matches for manual review
    - Detects date discrepancies between matched records
    - Flags inconsistent matches for manual review
    - Supports manual override through QC files
+   - Reports match quality metrics (plausible pool size)
 
-5. **Data Protection**
+7. **Data Protection**
    - Maintains separate fields for automatic and manual matches
    - Preserves original IDs while tracking matches
    - Supports anonymized school codes for matching
@@ -184,4 +215,4 @@ See individual function documentation for usage details. The main workflow is:
 1. Download data using `entryPoint.R`
 2. Process questionnaires using functions in `CuspDownloadFunctions.R`
 3. Process task data using functions in `CuspTaskFunctions.R`
-4. Match and anonymize data using functions in `CuspMatchingFunctions.R` 
+4. Match and anonymize data using functions in `CuspMatchingFunctions.R`
