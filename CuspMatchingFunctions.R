@@ -652,9 +652,11 @@ process_and_anonymize <- function(df) {
 #' @param Q1 Q1 data frame
 #' @param Q2 Q2 data frame
 #' @param current_date Current date for filename
+#' @param qc_flags Optional QC flags data.table to merge into questionnaires before saving
+#' @param save_files Whether to save files (default TRUE)
 #' @return The combined and processed Qs data.table
 #' @export
-process_questionnaires <- function(duplicate_map, Q1, Q2, current_date) {
+process_questionnaires <- function(duplicate_map, Q1, Q2, current_date, qc_flags = NULL, save_files = TRUE) {
    tryCatch({
     message("Starting questionnaire processing...")
     ## Note manually selecting the final response to each question AFTER merging the duplicate map 
@@ -737,8 +739,8 @@ process_questionnaires <- function(duplicate_map, Q1, Q2, current_date) {
     setDT(Qs)
 
     setDT(registrationDF)
-    #Merge in RegSample info
-    Qs <- Qs[registrationDF[,c("User.code", "name", "RegSample", "District")], on = c(User.code = "User.code")]
+    #Merge in RegSample info and dataTag
+    Qs <- Qs[registrationDF[,c("User.code", "name", "RegSample", "District", "dataTag")], on = c(User.code = "User.code")]
     
     # Remove any no data cases and test registrations
     Qs <- Qs[!is.na(Date.Completed) &
@@ -746,23 +748,31 @@ process_questionnaires <- function(duplicate_map, Q1, Q2, current_date) {
     
     ## Add derived variables
     Qs<-deriveQuestionnaireVariables(Qs)
-
-    message("Splitting by site and saving...")
-    sites <- c("CUSP_NS", "CUSP_UBCO", "CUSP_ONTARIO")
     
-    for (site in sites) {
-      tryCatch({
-        site_data <- Qs[RegSample == site, -c("RegSample", "name", "District")]
-        write.xlsx(
-          site_data,
-          paste0("CUSP_QUESTIONNAIRES_", site, "_", current_date, ".xlsx"),
-          quote = FALSE,
-          na = "",
-          rowNames = FALSE
-        )
-      }, error = function(e) {
-        message("Error processing site ", site, ": ", e$message)
-      })
+    # Add QC flags if provided (before saving)
+    if (!is.null(qc_flags)) {
+      setDT(qc_flags)
+      Qs <- merge(Qs, qc_flags, by = "User.code", all.x = TRUE)
+    }
+
+    if (save_files) {
+      message("Splitting by site and saving...")
+      sites <- c("CUSP_NS", "CUSP_UBCO", "CUSP_ONTARIO")
+      
+      for (site in sites) {
+        tryCatch({
+          site_data <- Qs[RegSample == site, -c("RegSample", "name", "District")]
+          write.xlsx(
+            site_data,
+            paste0("CUSP_QUESTIONNAIRES_", site, "_", current_date, ".xlsx"),
+            quote = FALSE,
+            na = "",
+            rowNames = FALSE
+          )
+        }, error = function(e) {
+          message("Error processing site ", site, ": ", e$message)
+        })
+      }
     }
     
     message("Generating summaries...")
