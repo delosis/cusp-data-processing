@@ -357,7 +357,9 @@ matching[is.na(matching$RegSample)]$RegSample <-
 # Set data tags for NS samples
 matching[date_of_testing<'2023-01-01' & RegSample=='CUSP_NS',"dataTag"] <- 'c1-t1'
 matching[date_of_testing>'2023-01-01' & RegSample=='CUSP_NS' & is.na(dataTag),"dataTag"] <- 'c2-t1'
-matching[RegSample=='CUSP_NS' & is.na(schoolID),schoolID := regmatches(User.code, regexpr("S\\d+CUSP", User.code))]
+
+matching[RegSample=='CUSP_NS' & is.na(schoolID) & grepl("S\\d+CUSP", User.code),
+         schoolID := regmatches(User.code, regexpr("S\\d+CUSP", User.code))]
 
 # Save original matching data
 matching_orig <- matching
@@ -548,6 +550,9 @@ if (file.exists("checkpoint_y2matches.RData")) {
 if (file.exists("checkpoint_matching_complete.RData")) {
   message("Loading matching complete checkpoint...")
   load("checkpoint_matching_complete.RData")
+  # Calculate matching statistics even when loaded from checkpoint
+  run_stats <- calculate_matching_stats(matching, run_stats)
+  run_stats <- check_manualQC_matches(matching, manualQCMatches, run_stats)
 } else {
   message("Starting/resuming Y3 matching...")
   tryCatch({
