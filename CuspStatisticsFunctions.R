@@ -82,6 +82,9 @@ init_statistics <- function() {
       by_regsample_cohort_timepoint = data.table()
     ),
     
+    # Registration by cohort timepoint
+    registration_by_cohort_timepoint = data.table(),
+    
     # Matching statistics
     matching = list(
       nameless_matches = 0L,
@@ -203,6 +206,19 @@ calculate_registration_stats <- function(registrationDF, stats) {
   # Count by RegSample (CUSP only)
   if (nrow(cusp_data) > 0 && "RegSample" %in% names(cusp_data)) {
     stats$registration$by_regsample <- cusp_data[, .(Count = .N), by = RegSample]
+    
+    # Count by RegSample, Cohort, and Timepoint if dataTag exists
+    if ("dataTag" %in% names(cusp_data)) {
+      parsed <- parse_dataTag(cusp_data$dataTag)
+      cusp_data <- cbind(cusp_data, parsed[, .(Cohort, Timepoint)])
+      
+      stats$registration$by_regsample_cohort_timepoint <- cusp_data[, .(
+        Count = .N,
+        Consent_Yes = sum(toupper(consent) == "YES", na.rm = TRUE),
+        Consent_No = sum(toupper(consent) == "NO", na.rm = TRUE),
+        Consent_Missing = sum(is.na(consent) | consent == "", na.rm = TRUE)
+      ), by = .(RegSample, Cohort, Timepoint)]
+    }
   }
   
   # Count consent status (CUSP only)
@@ -211,13 +227,15 @@ calculate_registration_stats <- function(registrationDF, stats) {
     stats$registration$consent_no <- sum(toupper(cusp_data$consent) == "NO", na.rm = TRUE)
     stats$registration$consent_missing <- sum(is.na(cusp_data$consent) | cusp_data$consent == "", na.rm = TRUE)
     
-    # Consent by RegSample
-    stats$registration$consent_by_regsample <- cusp_data[, .(
-      Total = .N,
-      Consent_Yes = sum(toupper(consent) == "YES", na.rm = TRUE),
-      Consent_No = sum(toupper(consent) == "NO", na.rm = TRUE),
-      Consent_Missing = sum(is.na(consent) | consent == "", na.rm = TRUE)
-    ), by = RegSample]
+    # Consent by RegSample (if not already done above)
+    if (is.null(stats$registration$consent_by_regsample) || nrow(stats$registration$consent_by_regsample) == 0) {
+      stats$registration$consent_by_regsample <- cusp_data[, .(
+        Total = .N,
+        Consent_Yes = sum(toupper(consent) == "YES", na.rm = TRUE),
+        Consent_No = sum(toupper(consent) == "NO", na.rm = TRUE),
+        Consent_Missing = sum(is.na(consent) | consent == "", na.rm = TRUE)
+      ), by = RegSample]
+    }
   }
   
   # OPfS consent count
@@ -230,12 +248,13 @@ calculate_registration_stats <- function(registrationDF, stats) {
 
 #' Calculate questionnaire linkage statistics (simplified - just linked or not)
 #' @param matching Matching data.table (after merge with Q1/Q2)
+#' @param registrationDF Registration data.table (to get all registered participants)
 #' @param Q1 Q1 data.table
 #' @param Q2 Q2 data.table
 #' @param stats Statistics structure
 #' @return Updated statistics structure
 #' @export
-calculate_questionnaire_linkage_stats <- function(matching, Q1, Q2, stats) {
+calculate_questionnaire_linkage_stats <- function(matching, registrationDF, Q1, Q2, stats) {
   if (is.null(matching) || nrow(matching) == 0) {
     return(stats)
   }
@@ -243,22 +262,23 @@ calculate_questionnaire_linkage_stats <- function(matching, Q1, Q2, stats) {
   setDT(matching)
   setDT(Q1)
   setDT(Q2)
+  setDT(registrationDF)
   
-  # Filter to CUSP only
-  matching_cusp <- matching[grepl('CUSP', RegSample, ignore.case = TRUE), ]
+  # Filter to CUSP only for registration
+  registration_cusp <- registrationDF[grepl('CUSP', RegSample, ignore.case = TRUE), ]
   
   # Get unique User.codes from Q1 and Q2
   q1_users <- unique(Q1$User.code)
   q2_users <- unique(Q2$User.code)
   q_users <- unique(c(q1_users, q2_users))
   
-  # Parse dataTag for cohort/timepoint breakdown
-  if ("dataTag" %in% names(matching_cusp)) {
-    parsed <- parse_dataTag(matching_cusp$dataTag)
-    matching_cusp <- cbind(matching_cusp, parsed[, .(Cohort, Timepoint)])
+  # Calculate linkage from registration data (all registered participants)
+  if (nrow(registration_cusp) > 0 && "dataTag" %in% names(registration_cusp)) {
+    parsed <- parse_dataTag(registration_cusp$dataTag)
+    registration_cusp <- cbind(registration_cusp, parsed[, .(Cohort, Timepoint)])
     
     # Calculate linkage by RegSample, Cohort, Timepoint
-    linkage_by_group <- matching_cusp[, {
+    linkage_by_group <- registration_cusp[, {
       users <- unique(User.code[!is.na(User.code)])
       linked_count <- sum(users %in% q_users)
       not_linked_count <- length(users) - linked_count
@@ -336,7 +356,7 @@ calculate_nameless_stats <- function(nameless_matches, matching, stats) {
   return(stats)
 }
 
-#' Calculate matching statistics
+#' Calculate matching statistics using union-find to identify unique participants
 #' @param matching Final matching data.table
 #' @param stats Statistics structure
 #' @return Updated statistics structure
@@ -356,31 +376,206 @@ calculate_matching_stats <- function(matching, stats) {
     parsed <- parse_dataTag(matching_cusp$dataTag)
     matching_cusp <- cbind(matching_cusp, parsed[, .(Cohort, Timepoint)])
     
-    # Count by cohort and timepoint with match information
+    # Use union-find to identify unique participants (same approach as matching_summary.R)
+    # Collect ALL User.codes that might ever be part of a chain
+    all_relevant_users <- unique(c(matching_cusp$User.code,
+                                   matching_cusp$Y2AutoMatch[!is.na(matching_cusp$Y2AutoMatch)],
+                                   matching_cusp$Y3AutoMatch[!is.na(matching_cusp$Y3AutoMatch)]))
+    
+    # Initialize the parent map in a new environment for mutability
+    parent_env <- new.env(hash = TRUE, parent = emptyenv())
+    for (id in all_relevant_users) {
+      if (!is.na(id) && id != "") {
+        assign(id, id, envir = parent_env)
+      }
+    }
+    
+    # Union-Find helper functions
+    find_root_uf <- function(id_val) {
+      if (is.na(id_val) || id_val == "" || !exists(id_val, envir = parent_env)) {
+        return(id_val)
+      }
+      path <- c()
+      current_id <- id_val
+      while (exists(current_id, envir = parent_env) && get(current_id, envir = parent_env) != current_id) {
+        path <- c(path, current_id)
+        current_id <- get(current_id, envir = parent_env)
+      }
+      # Path compression
+      for (node in path) {
+        assign(node, current_id, envir = parent_env)
+      }
+      return(current_id)
+    }
+    
+    union_sets_uf <- function(id1, id2) {
+      if (is.na(id1) || is.na(id2) || id1 == "" || id2 == "" ||
+          !exists(id1, envir = parent_env) || !exists(id2, envir = parent_env)) {
+        return(invisible(NULL))
+      }
+      root1 <- find_root_uf(id1)
+      root2 <- find_root_uf(id2)
+      if (root1 != root2) {
+        new_root <- min(root1, root2)
+        assign(root1, new_root, envir = parent_env)
+        assign(root2, new_root, envir = parent_env)
+      }
+    }
+    
+    # Perform all Union operations
+    for (i in seq_len(nrow(matching_cusp))) {
+      current_user <- matching_cusp[i, User.code]
+      y2_link <- matching_cusp[i, Y2AutoMatch]
+      y3_link <- matching_cusp[i, Y3AutoMatch]
+      
+      # Extract actual user code from nameless matches (format: #NAMELESS#_UserCode)
+      if (!is.na(y2_link) && y2_link != "") {
+        y2_clean <- gsub("^#NAMELESS(MULTIPLE)?#_", "", y2_link)
+        if (y2_clean != "" && exists(current_user, envir = parent_env) && exists(y2_clean, envir = parent_env)) {
+          union_sets_uf(current_user, y2_clean)
+        }
+      }
+      if (!is.na(y3_link) && y3_link != "") {
+        y3_clean <- gsub("^#NAMELESS(MULTIPLE)?#_", "", y3_link)
+        if (y3_clean != "" && exists(current_user, envir = parent_env) && exists(y3_clean, envir = parent_env)) {
+          union_sets_uf(current_user, y3_clean)
+        }
+      }
+    }
+    
+    # Assign Participant_ID to each row
+    matching_cusp[, Participant_ID := sapply(User.code, function(x) {
+      if (is.na(x) || x == "" || !exists(x, envir = parent_env)) {
+        return(ifelse(is.na(x), NA_character_, x))
+      }
+      return(find_root_uf(x))
+    }, USE.NAMES = FALSE)]
+    
+    # Count by cohort and timepoint - now counting unique participants, not rows
     stats$matching$by_cohort_timepoint <- matching_cusp[, .(
-      Count = .N,
-      Has_Y2_Match = sum(!is.na(Y2AutoMatch)),
-      Has_Y3_Match = sum(!is.na(Y3AutoMatch)),
-      Has_Both_Matches = sum(!is.na(Y2AutoMatch) & !is.na(Y3AutoMatch))
+      Count_Rows = .N,
+      Unique_Participants = length(unique(Participant_ID[!is.na(Participant_ID)])),
+      Has_Y2_Match = sum(!is.na(Y2AutoMatch) & Y2AutoMatch != ""),
+      Has_Y3_Match = sum(!is.na(Y3AutoMatch) & Y3AutoMatch != ""),
+      Has_Both_Matches = sum(!is.na(Y2AutoMatch) & !is.na(Y3AutoMatch) & Y2AutoMatch != "" & Y3AutoMatch != "")
     ), by = .(RegSample, Cohort, Timepoint)]
     
-    # Calculate cohort progression (T1 to T2/T3)
-    # C2-t1 should match to C2-t2 (Y2) and C2-t3 (Y3)
-    # C3-t1 should match to C3-t2 (Y2)
-    # C4-t1 has no T2 - only T1 (accelerated longitudinal design)
-    cohort_progression <- matching_cusp[
+    # Calculate cohort progression (T1 to T2/T3) - counting unique participants
+    # Count T1 participants by cohort
+    t1_participants <- matching_cusp[
       !is.na(Cohort) & !is.na(Timepoint) & Timepoint == "t1",
-      .(
-        Total_T1 = .N,
-        Matched_to_T2 = sum(!is.na(Y2AutoMatch)),
-        Matched_to_T3 = sum(!is.na(Y3AutoMatch)),
-        Matched_to_Both = sum(!is.na(Y2AutoMatch) & !is.na(Y3AutoMatch)),
-        Not_Matched = sum(is.na(Y2AutoMatch) & is.na(Y3AutoMatch))
-      ),
-      by = .(RegSample, Cohort)
+      .(Participant_ID, RegSample, Cohort, Y2AutoMatch, Y3AutoMatch, User.code)
     ]
     
-    stats$matching$cohort_progression <- cohort_progression
+    # Get unique T1 participants
+    t1_unique <- unique(t1_participants[, .(Participant_ID, RegSample, Cohort)])
+    
+    # Count T2 participants by cohort
+    t2_participants <- matching_cusp[
+      !is.na(Cohort) & !is.na(Timepoint) & Timepoint == "t2",
+      .(Participant_ID, RegSample, Cohort, User.code)
+    ]
+    t2_unique <- unique(t2_participants[, .(Participant_ID, RegSample, Cohort)])
+    
+    # Count T3 participants by cohort
+    t3_participants <- matching_cusp[
+      !is.na(Cohort) & !is.na(Timepoint) & Timepoint == "t3",
+      .(Participant_ID, RegSample, Cohort, User.code)
+    ]
+    t3_unique <- unique(t3_participants[, .(Participant_ID, RegSample, Cohort)])
+    
+    # Create lookup for matched User.codes to their cohort/timepoint
+    # This helps us validate if auto-matches are in the correct cohort/timepoint
+    match_lookup <- matching_cusp[
+      !is.na(Cohort) & !is.na(Timepoint),
+      .(User.code, Match_Cohort = Cohort, Match_Timepoint = Timepoint)
+    ]
+    setkey(match_lookup, User.code)
+    
+    # For each T1 participant, check if their Y2/Y3 matches are in the correct cohort/timepoint
+    t1_with_validated_matches <- t1_participants[, {
+      # Check Y2 matches - collect all Y2AutoMatch codes for this participant
+      y2_match_codes <- unique(Y2AutoMatch[!is.na(Y2AutoMatch) & Y2AutoMatch != ""])
+      has_y2_valid <- FALSE
+      if (length(y2_match_codes) > 0) {
+        # Clean nameless match prefixes
+        y2_clean <- unique(gsub("^#NAMELESS(MULTIPLE)?#_", "", y2_match_codes))
+        # Look up matched records
+        matched_info <- match_lookup[y2_clean, nomatch = NULL]
+        # Check if any are in the correct cohort and timepoint (T2)
+        if (nrow(matched_info) > 0) {
+          has_y2_valid <- any(matched_info$Match_Cohort == Cohort[1] & 
+                              matched_info$Match_Timepoint == "t2", na.rm = TRUE)
+        }
+      }
+      
+      # Check Y3 matches - collect all Y3AutoMatch codes for this participant
+      y3_match_codes <- unique(Y3AutoMatch[!is.na(Y3AutoMatch) & Y3AutoMatch != ""])
+      has_y3_valid <- FALSE
+      if (length(y3_match_codes) > 0) {
+        # Clean nameless match prefixes
+        y3_clean <- unique(gsub("^#NAMELESS(MULTIPLE)?#_", "", y3_match_codes))
+        # Look up matched records
+        matched_info <- match_lookup[y3_clean, nomatch = NULL]
+        # Check if any are in the correct cohort and timepoint (T3)
+        if (nrow(matched_info) > 0) {
+          has_y3_valid <- any(matched_info$Match_Cohort == Cohort[1] & 
+                              matched_info$Match_Timepoint == "t3", na.rm = TRUE)
+        }
+      }
+      
+      list(
+        Has_Y2_Valid = has_y2_valid,
+        Has_Y3_Valid = has_y3_valid
+      )
+    }, by = .(Participant_ID, RegSample, Cohort)]
+    
+    if (nrow(t1_unique) > 0) {
+      # Merge T1 counts with validated matches
+      cohort_progression <- merge(t1_unique, t1_with_validated_matches, 
+                                  by = c("Participant_ID", "RegSample", "Cohort"), all.x = TRUE)
+      
+      # Fill in NA values
+      cohort_progression[is.na(Has_Y2_Valid), Has_Y2_Valid := FALSE]
+      cohort_progression[is.na(Has_Y3_Valid), Has_Y3_Valid := FALSE]
+      
+      # Merge with T2 and T3 counts
+      t2_counts <- t2_unique[, .(T2_Participants = .N), by = .(RegSample, Cohort)]
+      t3_counts <- t3_unique[, .(T3_Participants = .N), by = .(RegSample, Cohort)]
+      
+      cohort_progression <- merge(cohort_progression, t2_counts, 
+                                  by = c("RegSample", "Cohort"), all.x = TRUE)
+      cohort_progression <- merge(cohort_progression, t3_counts, 
+                                  by = c("RegSample", "Cohort"), all.x = TRUE)
+      
+      # Fill in missing T2/T3 counts with 0
+      cohort_progression[is.na(T2_Participants), T2_Participants := 0L]
+      cohort_progression[is.na(T3_Participants), T3_Participants := 0L]
+      
+      # Aggregate by RegSample and Cohort
+      cohort_progression <- cohort_progression[, .(
+        Total_T1_Participants = .N,
+        T2_Participants = max(T2_Participants),  # Should be same for all rows in group
+        T2_Valid_Matches = sum(Has_Y2_Valid, na.rm = TRUE),  # Count of unique T1 participants with valid Y2 matches
+        T3_Participants = max(T3_Participants),  # Should be same for all rows in group
+        T3_Valid_Matches = sum(Has_Y3_Valid, na.rm = TRUE),  # Count of unique T1 participants with valid Y3 matches
+        Matched_to_Both = sum(Has_Y2_Valid & Has_Y3_Valid, na.rm = TRUE)
+      ), by = .(RegSample, Cohort)]
+      
+      stats$matching$cohort_progression <- cohort_progression
+    } else {
+      # No T1 participants found - create empty table
+      stats$matching$cohort_progression <- data.table(
+        RegSample = character(),
+        Cohort = character(),
+        Total_T1_Participants = integer(),
+        T2_Participants = integer(),
+        T2_Valid_Matches = integer(),
+        T3_Participants = integer(),
+        T3_Valid_Matches = integer(),
+        Matched_to_Both = integer()
+      )
+    }
   }
   
   return(stats)

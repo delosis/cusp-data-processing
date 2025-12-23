@@ -41,6 +41,7 @@ get_matching <- function(matching, .SD, timepoint,  max_dist = 3, skipPotentialC
   
   # Subset based on strict criteria (date of birth, gender) and time window
   # School is required if present in the source row
+  # For duplicate detection, also require same dataTag (or both missing) - duplicates come from same registration link
   subset_data <- matching[User.code != .SD$User.code &
                             (is.na(.SD$schoolID) | trimws(tolower(schoolID)) == trimws(tolower(.SD$schoolID)) |
                                (grepl("dss", tolower(schoolID)) & grepl("dss", tolower(.SD$schoolID)))) &
@@ -49,6 +50,21 @@ get_matching <- function(matching, .SD, timepoint,  max_dist = 3, skipPotentialC
                             (B5 %in% c("REFUSE", "4", "3") | .SD$B5 %in% c("REFUSE", "4", "3") | B5 == .SD$B5) &
                             as.numeric(date_of_testing - .SD$date_of_testing, units = "days") > min_days &
                             as.numeric(date_of_testing - .SD$date_of_testing, units = "days") < max_days]
+  
+  # For duplicate detection, add dataTag requirement (must be same or both missing)
+  if (timepoint == "duplicate") {
+    if ("dataTag" %in% names(.SD) && "dataTag" %in% names(subset_data)) {
+      # Both must have same dataTag, or both must be missing/NA
+      source_tag <- .SD$dataTag
+      if (is.na(source_tag) || source_tag == "") {
+        # Source has no dataTag - only match with records that also have no dataTag
+        subset_data <- subset_data[is.na(dataTag) | dataTag == "", ]
+      } else {
+        # Source has dataTag - only match with records that have the same dataTag
+        subset_data <- subset_data[!is.na(dataTag) & dataTag != "" & dataTag == source_tag, ]
+      }
+    }
+  }
   
   # remove fake names (but not potentials) from subset
   subset_data[grepl('fake name', school, ignore.case =TRUE) &
@@ -128,6 +144,10 @@ get_matching <- function(matching, .SD, timepoint,  max_dist = 3, skipPotentialC
     
     source_name_perms <- generate_name_permutations(source_name_norm)
     
+    # Check if source name has a surname (more than one word)
+    source_name_parts <- strsplit(source_name_norm, "\\s+")[[1]]
+    source_has_surname <- length(source_name_parts) > 1
+    
     best_match_code <- NA_character_
     min_overall_dist <- Inf
     
@@ -138,14 +158,62 @@ get_matching <- function(matching, .SD, timepoint,  max_dist = 3, skipPotentialC
       
       target_name_perms <- generate_name_permutations(target_name_curr)
       
+      # Check if target name has a surname (more than one word)
+      target_name_parts <- strsplit(target_name_curr, "\\s+")[[1]]
+      target_has_surname <- length(target_name_parts) > 1
+      
+      # First-name-only matching is only allowed if at least one name has no surname
+      allow_first_name_only <- !source_has_surname || !target_has_surname
+      
       # Find the best fuzzy match between any permutation of source and target
       current_best_dist <- Inf
       plausible_pool<-0
+      best_match_perm_type <- NA_character_  # Track what type of permutation matched
+      
+      # Tighter thresholds for duplicate detection (same person, slight name variation)
+      # vs. looser thresholds for timepoint matching (same person, potentially different name entry after time)
+      if (timepoint == "duplicate") {
+        # For duplicates: much stricter - should be very similar names (typos, spacing, capitalization only)
+        max_jw_threshold <- 0.92  # Higher Jaro-Winkler threshold (was 0.85)
+        max_dl_factor <- 0.10     # Much smaller edit distance (was 0.25 = 25%)
+        min_dl_threshold <- 1     # Maximum 1-2 character edits allowed
+      } else {
+        # For timepoint matching: more lenient (allows for more variation over time)
+        max_jw_threshold <- 0.85  # Original threshold
+        max_dl_factor <- 0.25     # Original factor
+        min_dl_threshold <- 1     # Minimum 1 edit distance
+      }
+      
       for (s_perm in source_name_perms) {
         for (t_perm in target_name_perms) {
+          # Skip first-name-only matches if both names have surnames
+          s_perm_parts <- strsplit(s_perm, "\\s+")[[1]]
+          t_perm_parts <- strsplit(t_perm, "\\s+")[[1]]
+          # If both permutations are single words (first name only) and both original names have surnames, skip
+          if (length(s_perm_parts) == 1 && length(t_perm_parts) == 1 && 
+              source_has_surname && target_has_surname) {
+            next  # Skip first-name-only matches when both names have surnames
+          }
+          
+          # For duplicate detection, skip surname-only matches (different first names = different people)
+          if (timepoint == "duplicate" && source_has_surname && target_has_surname) {
+            # Check if this is a surname-only match (last word matches but first names differ)
+            s_last <- s_perm_parts[length(s_perm_parts)]
+            t_last <- t_perm_parts[length(t_perm_parts)]
+            s_first <- s_perm_parts[1]
+            t_first <- t_perm_parts[1]
+            
+            # If surnames match but first names don't, skip (likely siblings/twins, not duplicates)
+            if (length(s_perm_parts) > 1 && length(t_perm_parts) > 1 &&
+                trimws(tolower(s_last)) == trimws(tolower(t_last)) &&
+                trimws(tolower(s_first)) != trimws(tolower(t_first))) {
+              next  # Skip surname-only matches for duplicates (different first names)
+            }
+          }
+          
           # Calculate max_dist more dynamically based on the length of the shorter permutation
-          dynamic_max_dist <- min(nchar(s_perm), nchar(t_perm)) * 0.25 # Adjust factor as needed
-          if (dynamic_max_dist < 1) dynamic_max_dist <- 1 # Ensure at least 1 edit distance allowed
+          dynamic_max_dist <- min(nchar(s_perm), nchar(t_perm)) * max_dl_factor
+          if (dynamic_max_dist < min_dl_threshold) dynamic_max_dist <- min_dl_threshold
           
           # Use Jaro-Winkler as it's often good for names, or keep Damerau-Levenshtein
           # For more flexibility, you might try both and prioritize Jaro-Winkler
@@ -155,16 +223,18 @@ get_matching <- function(matching, .SD, timepoint,  max_dist = 3, skipPotentialC
           # Convert Jaro-Winkler similarity to a distance for comparison with max_dist
           # Jaro-Winkler similarity is 0 to 1, higher is better. We need 0 to Inf, lower is better.
           # A simple conversion could be 1 - similarity for distance.
-          # We'll use a threshold for Jaro-Winkler similarity, say > 0.85
+          # We'll use a threshold for Jaro-Winkler similarity
           
-          if (dist_jw > 0.85 && dist_dl <= dynamic_max_dist) { # Prioritize high Jaro-Winkler AND reasonable Levenshtein
+          if (dist_jw > max_jw_threshold && dist_dl <= dynamic_max_dist) { # Prioritize high Jaro-Winkler AND reasonable Levenshtein
             if (dist_dl < current_best_dist) {
               plausible_pool <- plausible_pool + 1
               current_best_dist <- dist_dl
+              best_match_perm_type <- paste(s_perm, "vs", t_perm)
             }
           } else if (dist_dl <= dynamic_max_dist && dist_dl < current_best_dist) {
             plausible_pool <- plausible_pool + 1
             current_best_dist <- dist_dl
+            best_match_perm_type <- paste(s_perm, "vs", t_perm)
           }
         }
       }
@@ -177,9 +247,96 @@ get_matching <- function(matching, .SD, timepoint,  max_dist = 3, skipPotentialC
     }
     
     if (!is.na(best_match_code) && min_overall_dist != Inf) {
-      # You might want to log the specific permutations that matched, or the distance
-       message(paste("Fuzzy Match Found:", .SD$name, "with", subset_data[subset_data$User.code == best_match_code, name]))
-       message(paste("Fuzzy Match Pool:", plausible_pool))
+      # Twin detection checks (ONLY for duplicate detection, NOT for Y2/Y3 matching)
+      # For Y2/Y3 matching, we want to rely on the distance calculation to pick the best match,
+      # and participants will legitimately appear multiple times across timepoints
+      if (timepoint == "duplicate") {
+        matched_record <- subset_data[subset_data$User.code == best_match_code, ]
+        if (nrow(matched_record) > 0) {
+          # Take first if multiple rows
+          matched_record <- matched_record[1, ]
+          
+          # Check 1: Completed.Timestamp within 2 minutes - impossible to be same person
+          if ("Completed.Timestamp" %in% names(.SD) && "Completed.Timestamp" %in% names(matched_record)) {
+            if (!is.na(.SD$`Completed.Timestamp`) && !is.na(matched_record$`Completed.Timestamp`)) {
+              tryCatch({
+                source_ts <- as.POSIXct(.SD$`Completed.Timestamp`)
+                matched_ts <- as.POSIXct(matched_record$`Completed.Timestamp`)
+                time_diff_seconds <- abs(as.numeric(difftime(source_ts, matched_ts, units = "secs")))
+                if (time_diff_seconds <= 300) {  # 5 minutes = 300 seconds
+                  message(paste("Rejecting duplicate match:", .SD$name, "with", matched_record$name, 
+                               "- Completed.Timestamp within 5 minutes (likely twins)"))
+                  return(NA_character_)
+                }
+              }, error = function(e) {
+                # If timestamp parsing fails, continue with other checks
+              })
+            }
+          }
+          
+          # Check 2: Both names appear multiple times in matching data - likely twins
+          # Only reject if the names are DIFFERENT (twins have different names)
+          if (!is.na(.SD$name) && !is.na(matched_record$name)) {
+            source_name_norm <- trimws(tolower(.SD$name))
+            matched_name_norm <- trimws(tolower(matched_record$name))
+            
+            # If names are the same (normalized), it's likely a duplicate, not twins
+            if (source_name_norm == matched_name_norm) {
+              # Same name - likely a duplicate, don't reject
+            } else {
+              # Different names - check if both appear multiple times (excluding these two records)
+              # Count occurrences excluding the current two records
+              source_name_count <- sum(matching$User.code != .SD$User.code & 
+                                       matching$User.code != matched_record$User.code &
+                                       trimws(tolower(matching$name)) == source_name_norm, na.rm = TRUE)
+              matched_name_count <- sum(matching$User.code != .SD$User.code & 
+                                        matching$User.code != matched_record$User.code &
+                                        trimws(tolower(matching$name)) == matched_name_norm, na.rm = TRUE)
+              
+              # If both different names appear multiple times elsewhere, likely twins
+              if (source_name_count > 0 && matched_name_count > 0) {
+                message(paste("Rejecting duplicate match:", .SD$name, "with", matched_record$name, 
+                             "- Both different names appear multiple times in data (likely twins)"))
+                return(NA_character_)
+              }
+            }
+          }
+          
+          # Check 3: Basic "real name" check - both should have at least 2 words
+          if (!is.na(.SD$name) && !is.na(matched_record$name)) {
+            source_name_parts <- strsplit(trimws(.SD$name), "\\s+")[[1]]
+            matched_name_parts <- strsplit(trimws(matched_record$name), "\\s+")[[1]]
+            
+            # If one has 2+ words and the other doesn't, might be less reliable
+            # But this is a weaker check, so we'll just log it
+            if (length(source_name_parts) >= 2 && length(matched_name_parts) >= 2) {
+              # Both look like real names (have first and last), continue
+            } else {
+              # At least one doesn't look like a full name, but don't reject based on this alone
+            }
+          }
+        }
+      }
+      # Only log if the normalized names are actually different (not just capitalization)
+      matched_name <- subset_data[subset_data$User.code == best_match_code, name]
+      # Handle case where matched_name might be a vector or NA
+      if (length(matched_name) > 1) {
+        matched_name <- matched_name[1]  # Take first if multiple
+      }
+      
+      # Check if names exist before comparing
+      if (!is.na(.SD$name) && !is.na(matched_name)) {
+        source_name_norm <- trimws(tolower(.SD$name))
+        matched_name_norm <- trimws(tolower(matched_name))
+        
+        # Ensure we're comparing single values, not vectors
+        if (length(source_name_norm) == 1 && length(matched_name_norm) == 1) {
+          if (source_name_norm != matched_name_norm) {
+            message(paste("Fuzzy Match Found:", .SD$name, "with", matched_name))
+            message(paste("Fuzzy Match Pool:", plausible_pool))
+          }
+        }
+      }
       return(best_match_code)
     } else {
       return(NA_character_)
@@ -576,7 +733,7 @@ save_duplicate_map <- function(duplicate_map, date) {
 process_and_anonymize <- function(df) {
   # Define columns to keep
   keep_cols <- c("User.code", "schoolID", "dataTag", "RegSample", "District", "ManualQC.SuggestedDuplicate",
-                "AutoDuplicate", "Y2AutoMatch", "Y3AutoMatch", "date_of_testing", "B1")
+                "SuggestedManualQC_Y1Match", "AutoDuplicate", "Y2AutoMatch", "Y3AutoMatch", "date_of_testing", "B1")
   
   # Initialize key file
   KEY_FILE <- "school_id_keys.env"

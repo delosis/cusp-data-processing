@@ -208,6 +208,48 @@ The following files are required for processing but are not included in the repo
 
 These files should be placed in the same directory as the R scripts.
 
+## December 2025 Edits - Enhanced Twin Detection and Duplicate Matching
+
+### Improved Twin Detection Logic
+
+Significant improvements were made to prevent false duplicate matches between twins and siblings:
+
+1. **Timestamp-Based Twin Detection**
+
+   - Rejects duplicate matches when `Completed.Timestamp` is within 5 minutes
+   - Prevents false matches where the same person couldn't have registered and completed questionnaires twice in such a short time
+   - Only applies to duplicate detection, not Y2/Y3 matching
+
+2. **Multiple Occurrence Detection**
+
+   - Rejects duplicate matches when both names (if different) appear multiple times elsewhere in the data
+   - Helps identify cases where twins/siblings share the same school, DOB, and gender but have different names
+   - Only rejects when names are actually different (normalized comparison)
+
+3. **Name Permutation Restrictions**
+
+   - **First-name-only matching**: Only allowed when at least one name has no surname (e.g., "Emma" vs "Emma Smith")
+   - Applies to all match types (duplicates, Y2, Y3)
+
+4. **Surname-Only Match Exclusion**
+
+   - For duplicate detection, rejects matches where surnames match but first names differ
+   - Prevents siblings/twins with different first names from being marked as duplicates
+   - Example: "Rick Smith" and "Mick Smith" will not be matched as duplicates
+
+5. **Stricter Distance Thresholds for Duplicates**
+
+   - Jaro-Winkler threshold increased from 0.85 to 0.92 for duplicate detection
+   - Edit distance factor reduced from 25% to 10% of name length
+   - Ensures duplicates are only matched when names are very similar (minor typos, spacing, capitalization)
+
+6. **DataTag Requirement for Duplicates**
+   - Duplicate matches must have the same `dataTag` (or both missing)
+   - Since genuine duplicates come from the same registration link, they will share the same `dataTag`
+   - Prevents false matches across different cohorts/timepoints
+
+These improvements significantly reduce false positive duplicate matches while maintaining the ability to match legitimate duplicates and timepoint progressions.
+
 ## Usage
 
 See individual function documentation for usage details. The main workflow is:

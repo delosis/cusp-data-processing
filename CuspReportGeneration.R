@@ -89,6 +89,28 @@ generate_html_report <- function(stats, output_file = "CUSP_Run_Statistics.html"
     }
     html_content <- c(html_content, '      </table>')
   }
+  
+  if (!is.null(stats$registration$by_regsample_cohort_timepoint) && 
+      nrow(stats$registration$by_regsample_cohort_timepoint) > 0) {
+    # Sort by RegSample, then Cohort, then Timepoint
+    setDT(stats$registration$by_regsample_cohort_timepoint)
+    setorder(stats$registration$by_regsample_cohort_timepoint, RegSample, Cohort, Timepoint)
+    
+    html_content <- c(html_content, '      <h3>Registrations by Site, Cohort, and Timepoint</h3>')
+    html_content <- c(html_content, '      <table>')
+    html_content <- c(html_content, '        <tr><th>RegSample</th><th>Cohort</th><th>Timepoint</th><th>Count</th><th>Consent Yes</th><th>Consent No</th><th>Consent Missing</th></tr>')
+    for (i in 1:nrow(stats$registration$by_regsample_cohort_timepoint)) {
+      html_content <- c(html_content, sprintf('        <tr><td>%s</td><td>%s</td><td>%s</td><td>%d</td><td>%d</td><td>%d</td><td>%d</td></tr>',
+                                               stats$registration$by_regsample_cohort_timepoint$RegSample[i],
+                                               ifelse(is.na(stats$registration$by_regsample_cohort_timepoint$Cohort[i]), "N/A", stats$registration$by_regsample_cohort_timepoint$Cohort[i]),
+                                               ifelse(is.na(stats$registration$by_regsample_cohort_timepoint$Timepoint[i]), "N/A", stats$registration$by_regsample_cohort_timepoint$Timepoint[i]),
+                                               stats$registration$by_regsample_cohort_timepoint$Count[i],
+                                               stats$registration$by_regsample_cohort_timepoint$Consent_Yes[i],
+                                               stats$registration$by_regsample_cohort_timepoint$Consent_No[i],
+                                               stats$registration$by_regsample_cohort_timepoint$Consent_Missing[i]))
+    }
+    html_content <- c(html_content, '      </table>')
+  }
   html_content <- c(html_content, '    </div>')
   
   # Questionnaire Linkage (Simplified)
@@ -171,42 +193,39 @@ generate_html_report <- function(stats, output_file = "CUSP_Run_Statistics.html"
     setorder(stats$matching$cohort_progression, RegSample, Cohort)
     
     html_content <- c(html_content, '      <h3>Cohort Progression (T1 to T2/T3)</h3>')
-    html_content <- c(html_content, '      <p class="note">Note: C4 participants only have T1 (no T2 expected). C2 should progress to T2 and T3, C3 should progress to T2.</p>')
+    html_content <- c(html_content, '      <p class="note">Note: Counts are unique participants (not rows). T2/T3 Participants shows total count in that cohort/timepoint, with (in brackets) the number of validated auto-matches from T1 that are in the correct cohort and timepoint. C4 participants only have T1 (no T2 expected). C2 should progress to T2 and T3, C3 should progress to T2.</p>')
     html_content <- c(html_content, '      <table>')
-    html_content <- c(html_content, '        <tr><th>RegSample</th><th>Cohort</th><th>Total T1</th><th>Matched to T2</th><th>Matched to T3</th><th>Matched to Both</th><th>Not Matched</th></tr>')
+    html_content <- c(html_content, '        <tr><th>RegSample</th><th>Cohort</th><th>Total T1 Participants</th><th>T2 Participants</th><th>T3 Participants</th><th>Matched to Both</th></tr>')
     for (i in 1:nrow(stats$matching$cohort_progression)) {
-      html_content <- c(html_content, sprintf('        <tr><td>%s</td><td>%s</td><td>%d</td><td>%d</td><td>%d</td><td>%d</td><td>%d</td></tr>',
+      # Format T2 with validated matches in brackets
+      t2_display <- if (stats$matching$cohort_progression$T2_Participants[i] > 0) {
+        sprintf('%d (%d)', 
+                stats$matching$cohort_progression$T2_Participants[i],
+                stats$matching$cohort_progression$T2_Valid_Matches[i])
+      } else {
+        '0'
+      }
+      
+      # Format T3 with validated matches in brackets
+      t3_display <- if (stats$matching$cohort_progression$T3_Participants[i] > 0) {
+        sprintf('%d (%d)', 
+                stats$matching$cohort_progression$T3_Participants[i],
+                stats$matching$cohort_progression$T3_Valid_Matches[i])
+      } else {
+        '0'
+      }
+      
+      html_content <- c(html_content, sprintf('        <tr><td>%s</td><td>%s</td><td>%d</td><td>%s</td><td>%s</td><td>%d</td></tr>',
                                                stats$matching$cohort_progression$RegSample[i],
                                                stats$matching$cohort_progression$Cohort[i],
-                                               stats$matching$cohort_progression$Total_T1[i],
-                                               stats$matching$cohort_progression$Matched_to_T2[i],
-                                               stats$matching$cohort_progression$Matched_to_T3[i],
-                                               stats$matching$cohort_progression$Matched_to_Both[i],
-                                               stats$matching$cohort_progression$Not_Matched[i]))
+                                               stats$matching$cohort_progression$Total_T1_Participants[i],
+                                               t2_display,
+                                               t3_display,
+                                               stats$matching$cohort_progression$Matched_to_Both[i]))
     }
     html_content <- c(html_content, '      </table>')
   }
   
-  if (!is.null(stats$matching$by_cohort_timepoint) && nrow(stats$matching$by_cohort_timepoint) > 0) {
-    # Sort by RegSample, then Cohort, then Timepoint
-    setDT(stats$matching$by_cohort_timepoint)
-    setorder(stats$matching$by_cohort_timepoint, RegSample, Cohort, Timepoint)
-    
-    html_content <- c(html_content, '      <h3>Participants by Cohort and Timepoint</h3>')
-    html_content <- c(html_content, '      <table>')
-    html_content <- c(html_content, '        <tr><th>RegSample</th><th>Cohort</th><th>Timepoint</th><th>Count</th><th>Has Y2 Match</th><th>Has Y3 Match</th><th>Has Both</th></tr>')
-    for (i in 1:nrow(stats$matching$by_cohort_timepoint)) {
-      html_content <- c(html_content, sprintf('        <tr><td>%s</td><td>%s</td><td>%s</td><td>%d</td><td>%d</td><td>%d</td><td>%d</td></tr>',
-                                               stats$matching$by_cohort_timepoint$RegSample[i],
-                                               ifelse(is.na(stats$matching$by_cohort_timepoint$Cohort[i]), "N/A", stats$matching$by_cohort_timepoint$Cohort[i]),
-                                               ifelse(is.na(stats$matching$by_cohort_timepoint$Timepoint[i]), "N/A", stats$matching$by_cohort_timepoint$Timepoint[i]),
-                                               stats$matching$by_cohort_timepoint$Count[i],
-                                               stats$matching$by_cohort_timepoint$Has_Y2_Match[i],
-                                               stats$matching$by_cohort_timepoint$Has_Y3_Match[i],
-                                               stats$matching$by_cohort_timepoint$Has_Both_Matches[i]))
-    }
-    html_content <- c(html_content, '      </table>')
-  }
   html_content <- c(html_content, '    </div>')
   
   # DataTag Parsing Issues
@@ -223,21 +242,41 @@ generate_html_report <- function(stats, output_file = "CUSP_Run_Statistics.html"
   html_content <- c(html_content, '      </div>')
   html_content <- c(html_content, '    </div>')
   
-  # Final Counts by Checkpoint (ordered by RegSample then Checkpoint)
+  # Final Counts by Checkpoint (ordered by RegSample, Cohort, Timepoint, then Checkpoint)
   if (!is.null(stats$final_counts$by_regsample_cohort_timepoint) && 
       nrow(stats$final_counts$by_regsample_cohort_timepoint) > 0) {
     html_content <- c(html_content, '    <div class="section">')
     html_content <- c(html_content, '      <h2>Participant Counts by Processing Stage</h2>')
-    html_content <- c(html_content, '      <p class="note">Ordered by RegSample then Checkpoint. Split by Cohort and Timepoint.</p>')
+    html_content <- c(html_content, '      <p class="note">Ordered by RegSample, Cohort, Timepoint, then Checkpoint. Split by Cohort and Timepoint.</p>')
     
-    # Filter out Q1/Q2 load checkpoints (they count data rows, not participants)
+    # Filter out Q1/Q2 load checkpoints, OPfS filter, and checkpoints that don't change row counts
     setDT(stats$final_counts$by_regsample_cohort_timepoint)
     final_counts_filtered <- stats$final_counts$by_regsample_cohort_timepoint[
-      !Checkpoint %in% c("After_Q1_Load", "After_Q1_Load_Checkpoint", "After_Q2_Load", "After_Q2_Load_Checkpoint")
+      !Checkpoint %in% c("After_Q1_Load", "After_Q1_Load_Checkpoint", "After_Q2_Load", "After_Q2_Load_Checkpoint", 
+                        "After_OPfS_Filter", "After_AutoDuplicate", "After_All_Matching")
     ]
     
-    # Order by RegSample then Checkpoint
-    setorder(final_counts_filtered, RegSample, Checkpoint, Cohort, Timepoint)
+    # Define checkpoint order for logical sorting
+    checkpoint_order <- c(
+      "After_Registration",
+      "After_Registration_Checkpoint",
+      "After_Initial_Merge",
+      "After_DiscardIDs",
+      "After_Test_Removal",
+      "After_ManualQC_Exclusions",
+      "After_AutoDuplicate",
+      "After_All_Matching",
+      "After_Duplicate_Resolution",
+      "Final_Output"
+    )
+    
+    # Create checkpoint index for ordering
+    final_counts_filtered[, Checkpoint_Index := match(Checkpoint, checkpoint_order)]
+    final_counts_filtered[is.na(Checkpoint_Index), Checkpoint_Index := 999]  # Put unknown checkpoints at end
+    
+    # Order by RegSample, Cohort, Timepoint, then Checkpoint index
+    setorder(final_counts_filtered, RegSample, Cohort, Timepoint, Checkpoint_Index)
+    final_counts_filtered[, Checkpoint_Index := NULL]  # Remove helper column
     
     html_content <- c(html_content, '      <table>')
     html_content <- c(html_content, '        <tr><th>RegSample</th><th>Checkpoint</th><th>Cohort</th><th>Timepoint</th><th>Count</th></tr>')

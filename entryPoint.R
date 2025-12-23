@@ -28,6 +28,80 @@ tryCatch({
   manualQCduplicatesRid <- read.xlsx('ManualQC.xlsx','DuplicatesMatchedTid')
   manualQCexcludeRid <- read.xlsx('ManualQC.xlsx','ExcludeTid')
   manualQCMatches <- read.xlsx('ManualQC.xlsx','Suggested TP')
+  
+  # Preprocess manualQCMatches: split "OR" values into separate rows
+  if (!is.null(manualQCMatches) && nrow(manualQCMatches) > 0) {
+    setDT(manualQCMatches)
+    col_names <- names(manualQCMatches)
+    
+    if (length(col_names) >= 2) {
+      col1 <- col_names[1]
+      col2 <- col_names[2]
+      
+      # Function to split a value by " OR " and return as list
+      split_or <- function(x) {
+        if (is.na(x) || x == "") {
+          return(character(0))
+        }
+        # Split by " OR " (case insensitive, with optional whitespace)
+        parts <- trimws(strsplit(as.character(x), "\\s+OR\\s+")[[1]])
+        parts <- parts[parts != ""]
+        return(parts)
+      }
+      
+      # Create expanded rows
+      expanded_rows <- list()
+      for (i in 1:nrow(manualQCMatches)) {
+        val1 <- manualQCMatches[[col1]][i]
+        val2 <- manualQCMatches[[col2]][i]
+        
+        # Split both columns
+        parts1 <- split_or(val1)
+        parts2 <- split_or(val2)
+        
+        # If neither has OR, keep original row
+        if (length(parts1) <= 1 && length(parts2) <= 1) {
+          expanded_rows[[length(expanded_rows) + 1]] <- manualQCMatches[i, ]
+        } else {
+          # Expand: if one has OR, duplicate the other; if both have OR, create all combinations
+          if (length(parts1) <= 1) parts1 <- if (is.na(val1) || val1 == "") character(0) else as.character(val1)
+          if (length(parts2) <= 1) parts2 <- if (is.na(val2) || val2 == "") character(0) else as.character(val2)
+          
+          # If one is empty, create rows with just the other
+          if (length(parts1) == 0 && length(parts2) > 0) {
+            for (p2 in parts2) {
+              new_row <- copy(manualQCMatches[i, ])
+              set(new_row, j = col1, value = NA_character_)
+              set(new_row, j = col2, value = p2)
+              expanded_rows[[length(expanded_rows) + 1]] <- new_row
+            }
+          } else if (length(parts2) == 0 && length(parts1) > 0) {
+            for (p1 in parts1) {
+              new_row <- copy(manualQCMatches[i, ])
+              set(new_row, j = col1, value = p1)
+              set(new_row, j = col2, value = NA_character_)
+              expanded_rows[[length(expanded_rows) + 1]] <- new_row
+            }
+          } else {
+            # Both have values - create all combinations
+            for (p1 in parts1) {
+              for (p2 in parts2) {
+                new_row <- copy(manualQCMatches[i, ])
+                set(new_row, j = col1, value = p1)
+                set(new_row, j = col2, value = p2)
+                expanded_rows[[length(expanded_rows) + 1]] <- new_row
+              }
+            }
+          }
+        }
+      }
+      
+      # Combine all expanded rows
+      if (length(expanded_rows) > 0) {
+        manualQCMatches <- rbindlist(expanded_rows)
+      }
+    }
+  }
 }, error = function(e) {
   stop("Failed to load manual QC data: ", e$message)
 })
@@ -244,25 +318,16 @@ matching <- QsMatch[Q2match, on = c(User.code = "User.code"), nomatch = NA]
 message("Initial data processing complete. Saving pre-matching checkpoint...")
 save(matching, file = "checkpoint_pre_matching.RData")
 
-# Calculate statistics before exclusions (but after OPfS removal for reporting)
-# Filter OPfS first for reporting purposes
-matching_before_opfs <- matching
-matching_cusp_only <- matching[grepl('CUSP', RegSample, ignore.case = TRUE), ]
-run_stats$exclusions$opfs_removed <- nrow(matching_before_opfs) - nrow(matching_cusp_only)
+# Calculate statistics before exclusions
+run_stats <- calculate_questionnaire_linkage_stats(matching, registrationDF, Q1, Q2, run_stats)
+run_stats <- calculate_checkpoint_stats(matching, "After_Initial_Merge", run_stats)
 
-# Calculate questionnaire linkage on CUSP-only data
-run_stats <- calculate_questionnaire_linkage_stats(matching_cusp_only, Q1, Q2, run_stats)
-run_stats <- calculate_checkpoint_stats(matching_cusp_only, "After_Initial_Merge", run_stats)
-
-# Track exclusions on CUSP data
-matching_before_discard <- matching_cusp_only
+# Track exclusions
+matching_before_discard <- matching
 # Remove discarded IDs
-matching_cusp_only <- matching_cusp_only[!User.code %in% discardIDs$X1,]
-run_stats$exclusions$discardIDs <- nrow(matching_before_discard) - nrow(matching_cusp_only)
-run_stats <- calculate_checkpoint_stats(matching_cusp_only, "After_DiscardIDs", run_stats)
-
-# Continue with full matching for processing, but use CUSP-only for stats
-matching <- matching_cusp_only
+matching <- matching[!User.code %in% discardIDs$X1,]
+run_stats$exclusions$discardIDs <- nrow(matching_before_discard) - nrow(matching)
+run_stats <- calculate_checkpoint_stats(matching, "After_DiscardIDs", run_stats)
 
 # Add testing date
 matching$date_of_testing <- as.Date(matching$Processed.Timestamp)
@@ -289,7 +354,19 @@ matching$WasRegistered <- !is.na(matching$RegSample)
 matching[is.na(matching$RegSample)]$RegSample <-
   matching[is.na(matching$RegSample)]$Sample
 
-# OPfS already removed above, continue with CUSP-only data
+# Set data tags for NS samples
+matching[date_of_testing<'2023-01-01' & RegSample=='CUSP_NS',"dataTag"] <- 'c1-t1'
+matching[date_of_testing>'2023-01-01' & RegSample=='CUSP_NS' & is.na(dataTag),"dataTag"] <- 'c2-t1'
+matching[RegSample=='CUSP_NS' & is.na(schoolID),schoolID := regmatches(User.code, regexpr("S\\d+CUSP", User.code))]
+
+# Save original matching data
+matching_orig <- matching
+
+# Filter for CUSP samples (OPfS removal) - AFTER setting RegSample from Sample
+matching_before_opfs <- matching
+matching <- matching_orig[grepl('CUSP', RegSample, ignore.case = TRUE), ]
+run_stats$exclusions$opfs_removed <- nrow(matching_before_opfs) - nrow(matching)
+# Don't track this as a checkpoint since it's just filtering, not a processing step
 
 # Track test account exclusion
 matching_before_test <- matching
@@ -321,11 +398,6 @@ run_stats$exclusions$total_excluded <- run_stats$exclusions$discardIDs +
                                        run_stats$exclusions$manualQC_exclude_usercode + 
                                        run_stats$exclusions$manualQC_exclude_rid
 run_stats <- calculate_checkpoint_stats(matching, "After_ManualQC_Exclusions", run_stats)
-
-# Set data tags for NS samples
-matching[date_of_testing<'2023-01-01' & RegSample=='CUSP_NS',"dataTag"] <- 'c1-t1'
-matching[date_of_testing>'2023-01-01' & RegSample=='CUSP_NS' & is.na(dataTag),"dataTag"] <- 'c2-t1'
-matching[RegSample=='CUSP_NS' & is.na(schoolID),schoolID := regmatches(User.code, regexpr("S\\d+CUSP", User.code))]
 
 message("Processing manual QC duplicates...")
 # Process duplicates
@@ -365,7 +437,57 @@ manualQCduplicates <- rbind(manualQCduplicates, manualQCduplicatesRid)
 
 # Merge duplicates with matching data
 matching <- merge(matching, manualQCduplicates, by="User.code", all.x=TRUE)
-run_stats <- calculate_checkpoint_stats(matching, "After_ManualQC_Duplicates", run_stats)
+# No checkpoint here - just adding a column, not a meaningful processing stage
+
+# Process manual QC Y1 matches (timepoint to timepoint matches)
+# These are matches between one timepoint and the next (e.g., T1 to T2)
+if (!is.null(manualQCMatches) && nrow(manualQCMatches) > 0) {
+  setDT(manualQCMatches)
+  
+
+  col_names <- names(manualQCMatches)
+  
+    # Simple two-column structure - first column is T1 User.code, second is T2 User.code
+    col1 <- col_names[1]
+    col2 <- col_names[2]
+    
+    # Create mapping from T1 to T2
+    manualQC_y1_t1_to_t2 <- manualQCMatches[!is.na(get(col1)) & !is.na(get(col2)), 
+                                            .(User.code = get(col1), 
+                                              SuggestedManualQC_Y1Match = get(col2))]
+    
+    # Create mapping from T2 to T1 (reverse direction for bidirectional matching)
+    manualQC_y1_t2_to_t1 <- manualQCMatches[!is.na(get(col1)) & !is.na(get(col2)), 
+                                            .(User.code = get(col2), 
+                                              SuggestedManualQC_Y1Match = get(col1))]
+    
+    # Combine both directions
+    manualQC_y1_matches <- rbind(manualQC_y1_t1_to_t2, manualQC_y1_t2_to_t1)
+
+  
+  # Filter to only include User.codes that exist in matching
+  if (nrow(manualQC_y1_matches) > 0) {
+    manualQC_y1_matches <- manualQC_y1_matches[User.code %in% matching$User.code &
+                                                SuggestedManualQC_Y1Match %in% matching$User.code]
+    
+    # Remove duplicates (in case there are any)
+    manualQC_y1_matches <- unique(manualQC_y1_matches)
+    
+    # Merge with matching data
+    if (nrow(manualQC_y1_matches) > 0) {
+      matching <- merge(matching, manualQC_y1_matches, by="User.code", all.x=TRUE)
+    } else {
+      # Add empty column if no valid matches
+      matching[, SuggestedManualQC_Y1Match := NA_character_]
+    }
+  } else {
+    # Add empty column if no matches
+    matching[, SuggestedManualQC_Y1Match := NA_character_]
+  }
+} else {
+  # Add empty column if manualQCMatches is empty or null
+  matching[, SuggestedManualQC_Y1Match := NA_character_]
+}
 
 # Check for autoduplicate checkpoint
 if (file.exists("checkpoint_autoduplicate.RData")) {
