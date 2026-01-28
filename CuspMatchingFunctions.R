@@ -594,76 +594,81 @@ resolve_duplicates <- function(matching) {
       
       remove_records <- records[setdiff(1:nrow(records), keep_idx)]
       
+      # Filter out records with the same User.code as the kept record
+      remove_records <- remove_records[User.code != keep_record$User.code]
       
-      
-      # For each removed record, check if it had Y2/Y3 matches
-      
-      for (i in 1:nrow(remove_records)) {
-        removed <- remove_records[i]
+      # Only process if there are actually different records to remove
+      if (nrow(remove_records) > 0) {
         
+        # For each removed record, check if it had Y2/Y3 matches
         
-        
-        # If kept record has no Y2 match but removed record does, transfer it
-        
-        if (is.na(keep_record$Y2AutoMatch) &&
-            !is.na(removed$Y2AutoMatch)) {
-          keep_record$Y2AutoMatch <- removed$Y2AutoMatch
+        for (i in 1:nrow(remove_records)) {
+          removed <- remove_records[i]
           
-        }
-        
-        
-        
-        # If kept record has no Y3 match but removed record does, transfer it
-        
-        if (is.na(keep_record$Y3AutoMatch) &&
-            !is.na(removed$Y3AutoMatch)) {
-          keep_record$Y3AutoMatch <- removed$Y3AutoMatch
           
-        }
-        
-        
-        
-        # Record mapping including Y2/Y3 matches
-        
-        duplicate_map <- rbind(
-          duplicate_map,
-          data.table(
-            kept_id = keep_record$User.code,
+          
+          # If kept record has no Y2 match but removed record does, transfer it
+          
+          if (is.na(keep_record$Y2AutoMatch) &&
+              !is.na(removed$Y2AutoMatch)) {
+            keep_record$Y2AutoMatch <- removed$Y2AutoMatch
             
-            removed_id = removed$User.code,
+          }
+          
+          
+          
+          # If kept record has no Y3 match but removed record does, transfer it
+          
+          if (is.na(keep_record$Y3AutoMatch) &&
+              !is.na(removed$Y3AutoMatch)) {
+            keep_record$Y3AutoMatch <- removed$Y3AutoMatch
             
-            reason = "earliest",
-            
-            y2_match = ifelse(
-              !is.na(removed$Y2AutoMatch),
-              removed$Y2AutoMatch,
-              NA_character_
-            ),
-            
-            y3_match = ifelse(
-              !is.na(removed$Y3AutoMatch),
-              removed$Y3AutoMatch,
-              NA_character_
+          }
+          
+          
+          
+          # Record mapping including Y2/Y3 matches
+          
+          duplicate_map <- rbind(
+            duplicate_map,
+            data.table(
+              kept_id = keep_record$User.code,
+              
+              removed_id = removed$User.code,
+              
+              reason = "earliest",
+              
+              y2_match = ifelse(
+                !is.na(removed$Y2AutoMatch),
+                removed$Y2AutoMatch,
+                NA_character_
+              ),
+              
+              y3_match = ifelse(
+                !is.na(removed$Y3AutoMatch),
+                removed$Y3AutoMatch,
+                NA_character_
+              )
+              
             )
-            
           )
-        )
+          
+        }
         
+        
+        
+        # Update the kept record with any transferred Y2/Y3 matches
+        
+        resolved[User.code == keep_record$User.code, `:=`(Y2AutoMatch = keep_record$Y2AutoMatch,
+                                                          
+                                                          Y3AutoMatch = keep_record$Y3AutoMatch)]
+        
+        
+        
+        # Remove duplicates from resolved dataset
+        
+        resolved <- resolved[!(User.code %in% remove_records$User.code)]
       }
-      
-      
-      
-      # Update the kept record with any transferred Y2/Y3 matches
-      
-      resolved[User.code == keep_record$User.code, `:=`(Y2AutoMatch = keep_record$Y2AutoMatch,
-                                                        
-                                                        Y3AutoMatch = keep_record$Y3AutoMatch)]
-      
-      
-      
-      # Remove duplicates from resolved dataset
-      
-      resolved <- resolved[!(User.code %in% remove_records$User.code)]
       
     }
     
